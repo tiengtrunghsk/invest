@@ -20,29 +20,42 @@ VN100_SYMBOLS = [
 ]
 
 def fetch_financial_reports(symbol):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://tcinvest.tcbs.com.vn/"
+    }
     reports = {}
     
     try:
-        url = "https://api-finfo.vndirect.com.vn/v4/financialStatements"
+        # Thử gọi API tài chính gốc của TCBS
+        url_income = f"https://apipubaws.tcbs.com.vn/tcs/v2/finance/{symbol}/income-statement?yearly=0&isAll=true"
+        r1 = requests.get(url_income, headers=headers, timeout=6)
         
-        # Đổi từ code sang symbol đúng chuẩn API BCTC của VNDirect
-        for report_type in ["INCOME_STATEMENT", "BALANCE_SHEET"]:
-            params = {
-                "q": f"symbol:{symbol}~reportType:{report_type}~periodType:QUARTER",
-                "size": 8,  # Lấy 8 quý gần nhất
-                "sort": "yearReport:desc,lengthReport:desc"
-            }
-            r = requests.get(url, params=params, headers=headers, timeout=8)
-            if r.status_code == 200:
-                data = r.json().get("data", [])
-                if report_type == "INCOME_STATEMENT":
-                    reports['income_statement'] = data
-                else:
-                    reports['balance_sheet'] = data
+        if r1.status_code == 200:
+            data_income = r1.json()
+            if data_income:  # Chỉ nhận nếu có dữ liệu thực tế
+                reports['income_statement'] = data_income
 
-        if not reports.get('income_statement') and not reports.get('balance_sheet'):
-            print(f"⚠️ Không lấy được dữ liệu BCTC cho mã: {symbol}")
+        url_balance = f"https://apipubaws.tcbs.com.vn/tcs/v2/finance/{symbol}/balance-sheet?yearly=0&isAll=true"
+        r2 = requests.get(url_balance, headers=headers, timeout=6)
+        
+        if r2.status_code == 200:
+            data_balance = r2.json()
+            if data_balance:
+                reports['balance_sheet'] = data_balance
+
+        # Nếu cả 2 đều trống, thử gọi sang nguồn API dự phòng (VNDirect ratios/financials)
+        if not reports:
+            url_backup = f"https://api-finfo.vndirect.com.vn/v4/financialStatements?q=symbol:{symbol}~periodType:QUARTER&size=4"
+            r3 = requests.get(url_backup, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            if r3.status_code == 200:
+                bk_data = r3.json().get("data", [])
+                if bk_data:
+                    reports['income_statement'] = bk_data
+
+        # Kiểm tra lần cuối trước khi lưu
+        if not reports:
+            print(f"⚠️ Không có dữ liệu BCTC cho mã: {symbol}")
             return False
 
         file_path = os.path.join(OUTPUT_DIR, f"{symbol}.json")
@@ -52,7 +65,7 @@ def fetch_financial_reports(symbol):
         print(f"✅ Đã cào xong BCTC cho mã: {symbol}")
         return True
     except Exception as e:
-        print(f"❌ Lỗi cào BCTC mã {symbol}: {e}")
+        print(f"❌ Lỗi mã {symbol}: {e}")
         return False
 
 def auto_git_push_bctc():
@@ -68,16 +81,16 @@ def auto_git_push_bctc():
 
 def main():
     total = len(VN100_SYMBOLS)
-    print(f"🚀 Bắt đầu cào dữ liệu BCTC cho {total} mã cổ phiếu...")
+    print(f"🚀 Bắt đầu cào dữ liệu BCTC thông minh cho {total} mã...")
     
     success = 0
     for i, symbol in enumerate(VN100_SYMBOLS):
         print(f"[{i+1}/{total}] Xử lý: {symbol}...")
         if fetch_financial_reports(symbol):
             success += 1
-        time.sleep(0.3)
+        time.sleep(0.4)
         
-    print(f"\n🎉 Hoàn tất! Đã lưu thành công {success}/{total} file BCTC.")
+    print(f"\n🎉 Hoàn tất! Đã lưu thành công {success}/{total} file BCTC có dữ liệu.")
     auto_git_push_bctc()
 
 if __name__ == "__main__":
