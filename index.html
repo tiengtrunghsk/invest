@@ -237,9 +237,12 @@
         let stockData = {};
         let currentSymbolHistory = null;
         let chartInstance = null;
+        let candleSeriesInstance = null;
+        let volumeSeriesInstance = null;
         let currentSymbol = null;
         let currentInterval = 'D1';
 
+        let realtimeInterval = null;
         let isBoldVol = false;
         // Mặc định bật MA20
         let activeIndicators = {
@@ -494,8 +497,8 @@
                                 <span class="text-[10px] text-slate-400 mt-1"><i class="fa-solid fa-tag mr-1"></i>${SECTOR_NAMES[sectorCode]}</span>
                             </div>
                             <div class="text-right">
-                                <span class="block text-lg font-bold text-emerald-400">${formatNumber(item.close)}</span>
-                                <span class="text-[10px] text-slate-500">KL: ${formatNumber(item.volume)}</span>
+                                <span class="block text-lg font-bold text-emerald-400" id="card-price-${item.symbol}">${formatNumber(item.close)}</span>
+                                <span class="text-[10px] text-slate-500" id="card-vol-${item.symbol}">KL: ${formatNumber(item.volume)}</span>
                             </div>
                         </div>
 
@@ -511,6 +514,60 @@
                 `;
                 container.appendChild(card);
             });
+        }
+
+        // HÀM CẬP NHẬT REALTIME TRỰC TIẾP CHO MÃ ĐANG MỞ BIỂU ĐỒ (CLIENT-SIDE)
+        function startLiveTrackingForSymbol(symbol) {
+            if (realtimeInterval) clearInterval(realtimeInterval);
+
+            const fetchLivePrice = async () => {
+                if (document.getElementById('chart-modal').classList.contains('hidden')) {
+                    clearInterval(realtimeInterval);
+                    return;
+                }
+
+                try {
+                    const url = `https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/s-chart?ticker=${symbol}&resolution=D&from=0&to=9999999999`;
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        const json = await res.json();
+                        if (json.data && json.data.length > 0) {
+                            const latest = json.data[json.data.length - 1];
+                            const newClose = parseFloat(latest.close) || 0;
+                            const newVol = parseInt(latest.volume) || 0;
+
+                            // 1. Cập nhật giá trên Card ngoài màn hình chính nếu có hiển thị
+                            const cardPriceEl = document.getElementById(`card-price-${symbol}`);
+                            const cardVolEl = document.getElementById(`card-vol-${symbol}`);
+                            if (cardPriceEl) cardPriceEl.innerText = formatNumber(newClose);
+                            if (cardVolEl) cardVolEl.innerText = `KL: ${formatNumber(newVol)}`;
+
+                            // 2. Cập nhật trực tiếp lên cây nến cuối cùng trên Biểu đồ (Khung D1)
+                            if (candleSeriesInstance && currentInterval === 'D1') {
+                                candleSeriesInstance.update({
+                                    time: latest.tradingDate || latest.time,
+                                    open: parseFloat(latest.open) || 0,
+                                    high: parseFloat(latest.high) || 0,
+                                    low: parseFloat(latest.low) || 0,
+                                    close: newClose
+                                });
+                            }
+                            if (volumeSeriesInstance && currentInterval === 'D1') {
+                                volumeSeriesInstance.update({
+                                    time: latest.tradingDate || latest.time,
+                                    value: newVol,
+                                    color: newClose >= (parseFloat(latest.open) || 0) ? 'rgba(16, 185, 129, 0.8)' : 'rgba(244, 63, 94, 0.8)'
+                                });
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log("Live fetch error:", e);
+                }
+            };
+
+            fetchLivePrice();
+            realtimeInterval = setInterval(fetchLivePrice, 30000); // 30 giây cập nhật 1 lần
         }
 
         function openModal(symbol) {
@@ -656,6 +713,9 @@
                 if (!res.ok) throw new Error('Không tìm thấy file lịch sử');
                 currentSymbolHistory = await res.json();
                 renderChartInstance(currentSymbolHistory);
+
+                // 👉 BẮT ĐẦU CHẠY REALTIME TỪNG PHÚT CHO MÃ NÀY
+                startLiveTrackingForSymbol(symbol);
             } catch (err) {
                 document.getElementById('tv-chart-container').innerHTML = `<div class="flex items-center justify-center h-full text-rose-400 text-xs">Chưa có dữ liệu lịch sử cho mã này!</div>`;
             } finally {
@@ -728,7 +788,7 @@
             });
 
             // 1. Khung nến chính
-            const candleSeries = chartInstance.addCandlestickSeries({
+            candleSeriesInstance = chartInstance.addCandlestickSeries({
                 upColor: '#10b981', downColor: '#f43f5e',
                 borderUpColor: '#10b981', borderDownColor: '#f43f5e',
                 wickUpColor: '#10b981', wickDownColor: '#f43f5e',
@@ -736,7 +796,7 @@
             });
 
             // 2. Khối lượng Volume ở phần đáy nến
-            const volumeSeries = chartInstance.addHistogramSeries({
+            volumeSeriesInstance = chartInstance.addHistogramSeries({
                 priceFormat: { type: 'volume' },
                 priceScaleId: 'volumeScale',
             });
@@ -761,7 +821,7 @@
                     });
                 }
 
-                candleSeries.setData(chartData);
+                candleSeriesInstance.setData(chartData);
                 
                 const volumeData = chartData.map(row => ({
                     time: row.time,
@@ -770,7 +830,7 @@
                         ? (isBoldVol ? 'rgba(16, 185, 129, 0.9)' : 'rgba(16, 185, 129, 0.5)') 
                         : (isBoldVol ? 'rgba(244, 63, 94, 0.9)' : 'rgba(244, 63, 94, 0.5)')
                 }));
-                volumeSeries.setData(volumeData);
+                volumeSeriesInstance.setData(volumeData);
 
                 if (activeIndicators.MA20) {
                     const ma20Series = chartInstance.addLineSeries({
@@ -853,6 +913,8 @@
         }
 
         function closeChartModal() {
+            if (realtimeInterval) clearInterval(realtimeInterval); // Dừng cập nhật ngầm khi đóng modal
+
             const modalBox = document.getElementById('chart-modal-box');
             if (modalBox.classList.contains('fullscreen')) {
                 toggleFullscreen();
