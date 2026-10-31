@@ -1,9 +1,9 @@
 import os
+import requests
 import json
 import time
 import subprocess
 import datetime
-from vnstock import Stock
 
 OUTPUT_DIR = "bctc_data"
 if not os.path.exists(OUTPUT_DIR):
@@ -20,23 +20,30 @@ VN100_SYMBOLS = [
 ]
 
 def fetch_financial_reports(symbol):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    reports = {}
+    
     try:
-        # Khởi tạo đối tượng Stock từ vnstock (sguồn TCBS hoặc VCI)
-        stock = Stock(symbol=symbol, source='TCBS')
+        # Sử dụng API finfo của VNDirect để lấy dữ liệu tài chính (Báo cáo kết quả kinh doanh / Cân đối kế toán)
+        url = "https://api-finfo.vndirect.com.vn/v4/financialStatements"
         
-        reports = {}
-        # Lấy báo cáo kết quả kinh doanh, cân đối kế toán, lưu chuyển tiền tệ qua vnstock
-        # (Tùy phiên bản vnstock bạn đang dùng, gọi hàm lấy finance tương ứng)
-        income_df = stock.finance.income_statement(period='quarter')
-        balance_df = stock.finance.balance_sheet(period='quarter')
-        cash_df = stock.finance.cash_flow(period='quarter')
-        
-        reports['income_statement'] = income_df.to_dict(orient='records') if income_df is not None else []
-        reports['balance_sheet'] = balance_df.to_dict(orient='records') if balance_df is not None else []
-        reports['cash_flow'] = cash_df.to_dict(orient='records') if cash_df is not None else []
+        # Lấy Kết quả kinh doanh (INCOME_STATEMENT) và Cân đối kế toán (BALANCE_SHEET) theo Quý
+        for report_type in ["INCOME_STATEMENT", "BALANCE_SHEET"]:
+            params = {
+                "q": f"code:{symbol}~reportType:{report_type}~periodType:QUARTER",
+                "size": 8,  # Lấy 8 quý gần nhất
+                "sort": "yearReport:desc,lengthReport:desc"
+            }
+            r = requests.get(url, params=params, headers=headers, timeout=8)
+            if r.status_code == 200:
+                data = r.json().get("data", [])
+                if report_type == "INCOME_STATEMENT":
+                    reports['income_statement'] = data
+                else:
+                    reports['balance_sheet'] = data
 
-        if not reports['income_statement']:
-            print(f"⚠️ Không có dữ liệu BCTC cho mã: {symbol}")
+        if not reports.get('income_statement') and not reports.get('balance_sheet'):
+            print(f"⚠️ Không lấy được dữ liệu BCTC cho mã: {symbol}")
             return False
 
         file_path = os.path.join(OUTPUT_DIR, f"{symbol}.json")
@@ -53,7 +60,7 @@ def auto_git_push_bctc():
     try:
         print("\n📤 Đang đồng bộ thư mục 'bctc_data' lên GitHub...")
         subprocess.run(["git", "add", OUTPUT_DIR], check=True)
-        commit_msg = f"Auto update BCTC data - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        commit_msg = f"Auto update BCTC raw data - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         subprocess.run(["git", "commit", "-m", commit_msg], check=True)
         subprocess.run(["git", "push"], check=True)
         print("🚀 Đẩy dữ liệu BCTC lên GitHub thành công!")
@@ -62,16 +69,16 @@ def auto_git_push_bctc():
 
 def main():
     total = len(VN100_SYMBOLS)
-    print(f"🚀 Bắt đầu cào BCTC cho {total} mã...")
+    print(f"🚀 Bắt đầu cào dữ liệu BCTC cho {total} mã cổ phiếu...")
     
     success = 0
     for i, symbol in enumerate(VN100_SYMBOLS):
         print(f"[{i+1}/{total}] Xử lý: {symbol}...")
         if fetch_financial_reports(symbol):
             success += 1
-        time.sleep(0.5)
+        time.sleep(0.3)
         
-    print(f"\n🎉 Hoàn tất! Thành công {success}/{total} mã.")
+    print(f"\n🎉 Hoàn tất! Đã lưu thành công {success}/{total} file BCTC.")
     auto_git_push_bctc()
 
 if __name__ == "__main__":
