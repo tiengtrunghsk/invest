@@ -24,13 +24,12 @@ def fetch_financial_reports(symbol):
     reports = {}
     
     try:
-        # Sử dụng API finfo của VNDirect để lấy dữ liệu tài chính (Báo cáo kết quả kinh doanh / Cân đối kế toán)
         url = "https://api-finfo.vndirect.com.vn/v4/financialStatements"
         
-        # Lấy Kết quả kinh doanh (INCOME_STATEMENT) và Cân đối kế toán (BALANCE_SHEET) theo Quý
+        # Đổi từ code sang symbol đúng chuẩn API BCTC của VNDirect
         for report_type in ["INCOME_STATEMENT", "BALANCE_SHEET"]:
             params = {
-                "q": f"code:{symbol}~reportType:{report_type}~periodType:QUARTER",
+                "q": f"symbol:{symbol}~reportType:{report_type}~periodType:QUARTER",
                 "size": 8,  # Lấy 8 quý gần nhất
                 "sort": "yearReport:desc,lengthReport:desc"
             }
