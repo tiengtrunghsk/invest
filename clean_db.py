@@ -134,17 +134,67 @@ def clean_bctc_data():
 
     print(f"✅ Đã dọn dẹp xong bảng BCTC.")
 
+
 def clean_stocks_data():
+    """
+    Dọn rác trong bảng stocks (Giá):
+    - Các trường tạm thời theo phiên: is_incomplete, last_error_at, chot_so_today, ratio_updated_at
+    - Các trường đã khai tử khỏi hệ thống: ps (đã bỏ P/S), ps_need_update (nếu có)
+    """
     print("\n🧹 Đang dọn dẹp các trường rác trong bảng Giá (stocks)...")
-    junk_fields = ["is_incomplete", "last_error_at", "chot_so_today", "ratio_updated_at"]
-    unset_query = {field: "" for field in junk_fields}
     
-    result = collection.update_many({}, {"$unset": unset_query})
+    # Trường rác tạm thời (từng phiên giao dịch)
+    junk_fields = [
+        "is_incomplete",
+        "last_error_at",
+        "chot_so_today",
+        "ratio_updated_at",
+    ]
+    
+    # Trường đã khai tử khỏi logic chấm điểm (đã bỏ P/S)
+    removed_fields = [
+        "ps",
+        "ps_need_update",
+    ]
+    
+    all_fields_to_unset = {field: "" for field in (junk_fields + removed_fields)}
+    
+    result = collection.update_many({}, {"$unset": all_fields_to_unset})
     print(f"✅ Đã dọn dẹp {result.modified_count} mã trong bảng Giá (stocks).")
+    print(f"   → Đã xóa các trường: {', '.join(junk_fields + removed_fields)}")
+
+    # Kiểm tra lại xem còn sót trường 'ps' nào không
+    still_has_ps = collection.count_documents({"ps": {"$exists": True}})
+    if still_has_ps == 0:
+        print(f"   ✅ Xác nhận: Không còn document nào chứa trường 'ps'.")
+    else:
+        print(f"   ⚠️ Cảnh báo: Vẫn còn {still_has_ps} document chứa trường 'ps' — kiểm tra lại.")
+
+
+def clean_screener_data():
+    """
+    Dọn rác trong bảng screener_results:
+    - Trường ps cũ (nếu có từ lần chấm điểm trước)
+    """
+    print("\n🧹 Đang dọn dẹp trường rác trong bảng Screener (screener_results)...")
+    screener_col = db["screener_results"]
+    
+    result = screener_col.update_many({}, {"$unset": {"ps": ""}})
+    print(f"✅ Đã dọn dẹp {result.modified_count} mã trong bảng Screener.")
+    
+    still_has_ps = screener_col.count_documents({"ps": {"$exists": True}})
+    if still_has_ps == 0:
+        print(f"   ✅ Xác nhận: Không còn document nào chứa trường 'ps'.")
+    else:
+        print(f"   ⚠️ Cảnh báo: Vẫn còn {still_has_ps} document chứa trường 'ps'.")
+
 
 if __name__ == "__main__":
     start_time = time.time()
+    
     clean_bctc_data()
     clean_stocks_data()
+    clean_screener_data()
+    
     elapsed = time.time() - start_time
     print(f"\n🏁 HOÀN TẤT QUÁ TRÌNH DỌN RÁC! Thời gian chạy: {elapsed:.2f} giây.")
