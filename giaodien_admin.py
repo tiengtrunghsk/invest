@@ -101,6 +101,7 @@ def build_admin_tools_tab_html(price_api_url):
     // ==================== ADMIN TOOLS SCRIPT ====================
     (function() {{
         const ADMIN_API_URL = "{price_api_url}";
+        const ADMIN_SECRET = "959214"; // Mật khẩu Admin
         let adminIsBusy = false;
 
         function adminLog(msg, type = 'info') {{
@@ -174,8 +175,16 @@ def build_admin_tools_tab_html(price_api_url):
             adminLog(`Đang gửi yêu cầu: ${{actionName}}...`, "warning");
             toggleAdminBtns(false);
             
+            // TỰ ĐỘNG NỐI THÊM KEY VÀO URL (Nếu URL đã có dấu ? thì dùng &, chưa có thì dùng ?)
+            let url = `${{ADMIN_API_URL}}${{endpoint}}`;
+            if (url.includes('?')) {{
+                url += `&key=${{ADMIN_SECRET}}`;
+            }} else {{
+                url += `?key=${{ADMIN_SECRET}}`;
+            }}
+
             try {{
-                const res = await fetch(`${{ADMIN_API_URL}}${{endpoint}}`);
+                const res = await fetch(url);
                 const data = await res.json();
                 if (data.status === 'success') {{
                     adminLog(`✅ ${{actionName}}: ${{data.message || 'Thành công'}}`, "success");
@@ -198,7 +207,8 @@ def build_admin_tools_tab_html(price_api_url):
             toggleAdminBtns(false);
             
             try {{
-                const res = await fetch(`${{ADMIN_API_URL}}/api/admin/force-ai`);
+                // Đã thêm key trực tiếp vào link
+                const res = await fetch(`${{ADMIN_API_URL}}/api/admin/force-ai?key=${{ADMIN_SECRET}}`);
                 const data = await res.json();
                 if (data.status === 'success') {{
                     adminLog(`✅ ${{data.message}}`, "success");
@@ -222,11 +232,12 @@ def build_admin_tools_tab_html(price_api_url):
             toggleAdminBtns(false);
             
             try {{
-                const res = await fetch(`${{ADMIN_API_URL}}/api/ai-analyze?symbol=${{symbol}}`);
+                // Đã thêm key vào link
+                const res = await fetch(`${{ADMIN_API_URL}}/api/admin/force-ai-single?symbol=${{symbol}}&key=${{ADMIN_SECRET}}`);
                 const data = await res.json();
                 if (data.status === 'success') {{
                     adminLog(`✅ AI đã phân tích xong ${{symbol}}:`, "success");
-                    adminLog(`Khuyến nghị: ${{data.data.recommendation}}`, "info");
+                    adminLog(`${{data.message}}`, "info");
                 }} else {{
                     adminLog(`❌ AI lỗi: ${{data.message}}`, "error");
                 }}
