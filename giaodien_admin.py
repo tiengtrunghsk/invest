@@ -25,18 +25,6 @@ def build_admin_tools_tab_html(price_api_url):
             </div>
         </div>
 
-        <!-- Cấu hình FHSC Key -->
-        <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-700 mb-4">
-            <h4 class="text-xs font-bold text-amber-400 mb-2"><i class="fa-solid fa-key mr-1"></i>FHSC API Key</h4>
-            <div class="flex gap-2">
-                <input type="password" id="admin-fhsc-key-input" placeholder="Nhập key mới..." class="flex-1 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-amber-500">
-                <button onclick="saveAdminFhscKey()" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-bold transition">
-                    <i class="fa-solid fa-floppy-disk"></i> Lưu
-                </button>
-            </div>
-            <div id="admin-key-msg" class="mt-1 text-[10px] font-bold hidden"></div>
-        </div>
-
         <!-- Cào dữ liệu -->
         <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-700 mb-4">
             <h4 class="text-xs font-bold text-purple-400 mb-2"><i class="fa-solid fa-download mr-1"></i>Cào Dữ liệu Hàng loạt</h4>
@@ -249,36 +237,6 @@ def build_admin_tools_tab_html(price_api_url):
                 adminLog(`❌ Lỗi kết nối: ${{e.message}}`, "error");
             }} finally {{
                 toggleAdminBtns(true);
-            }}
-        }};
-
-        window.saveAdminFhscKey = async function() {{
-            const key = document.getElementById('admin-fhsc-key-input').value.trim();
-            if (!key) return alert("Vui lòng nhập Key!");
-            
-            const msgEl = document.getElementById('admin-key-msg');
-            msgEl.classList.remove('hidden');
-            msgEl.className = "mt-1 text-[10px] font-bold text-amber-400";
-            msgEl.innerText = "Đang lưu...";
-            
-            try {{
-                const res = await fetch(`${{ADMIN_API_URL}}/api/set-fhsc-key`, {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ key: key }})
-                }});
-                const data = await res.json();
-                if (data.status === 'success') {{
-                    msgEl.className = "mt-1 text-[10px] font-bold text-emerald-400";
-                    msgEl.innerText = "✅ Lưu thành công!";
-                    adminLog("Đã cập nhật FHSC API Key.", "success");
-                }} else {{
-                    msgEl.className = "mt-1 text-[10px] font-bold text-rose-400";
-                    msgEl.innerText = "❌ " + data.message;
-                }}
-            }} catch (e) {{
-                msgEl.className = "mt-1 text-[10px] font-bold text-rose-400";
-                msgEl.innerText = "❌ Lỗi kết nối Server";
             }}
         }};
 
