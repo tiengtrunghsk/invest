@@ -252,10 +252,44 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const liveData = mongoPrices[sym] || {}; 
                 const mongoSI = mongoScreenerMap[sym] || {}; 
                 
-                let finalClosePrice = item.close_price || 0;
-                if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
-                else if (liveData.close !== undefined) finalClosePrice = liveData.close;
-                else if (extraData.close !== undefined) finalClosePrice = extraData.close;
+                // === LOGIC LAI: TỰ ĐỘNG CHỌN NGUỒN GIÁ (XỬ LÝ CẢ NGÀY LỄ) ===
+                let finalClosePrice = 0;
+                
+                // Lấy ngày hôm nay (giờ VN)
+                const now = new Date();
+                const vnDate = new Date(now.getTime() + 7 * 3600 * 1000);
+                const todayStr = vnDate.toISOString().split('T')[0];
+                
+                // Lấy ngày của nến cuối cùng (từ item.updated_at)
+                let lastBarDate = null;
+                if (item.updated_at) {
+                    const parts = item.updated_at.split(' ')[0].split('/');
+                    if (parts.length === 3) {
+                        lastBarDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                    }
+                }
+                
+                // Nếu hôm nay TRÙNG với ngày nến cuối cùng => Đang trong phiên hoặc vừa chốt phiên
+                const isTradingDay = (todayStr === lastBarDate);
+
+                if (isTradingDay) {
+                    // TRONG PHIÊN: Lấy giá realtime
+                    if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
+                    else if (liveData.close !== undefined) finalClosePrice = liveData.close;
+                    else if (item.close_price !== undefined) finalClosePrice = item.close_price;
+                } else {
+                    // NGOÀI PHIÊN / NGÀY LỄ / CUỐI TUẦN: Lấy giá đóng cửa từ nến
+                    if (item.close_price !== undefined && item.close_price > 0) {
+                        finalClosePrice = item.close_price;
+                    } else if (mongoSI.close_price !== undefined && mongoSI.close_price > 0) {
+                        finalClosePrice = mongoSI.close_price;
+                    } else if (liveData.close_price !== undefined) {
+                        finalClosePrice = liveData.close_price;
+                    } else if (extraData.close !== undefined) {
+                        finalClosePrice = extraData.close;
+                    }
+                }
+                // ========================================================
 
                 return {
                     ...item,
