@@ -252,45 +252,10 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const liveData = mongoPrices[sym] || {}; 
                 const mongoSI = mongoScreenerMap[sym] || {}; 
                 
-                // === SỬA TẠI ĐÂY: LOGIC LAI TỰ ĐỘNG CHỌN NGUỒN GIÁ ===
-                let finalClosePrice = 0;
-                
-                // Lấy ngày hôm nay (giờ VN) định dạng YYYY-MM-DD
-                const now = new Date();
-                const vnDate = new Date(now.getTime() + 7 * 3600 * 1000);
-                const todayStr = vnDate.toISOString().split('T')[0];
-                
-                // Lấy ngày của nến cuối cùng trong database (nếu có)
-                let lastBarDate = null;
-                if (item.updated_at) {
-                    const parts = item.updated_at.split(' ')[0].split('/');
-                    if (parts.length === 3) {
-                        lastBarDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-                    }
-                }
-
-                // Nếu ngày hôm nay TRÙNG với ngày của nến cuối cùng => Đang giao dịch
-                // Ngược lại => Hôm nay là ngày nghỉ (Lễ/Tết/Cuối tuần)
-                const isTradingDay = (todayStr === lastBarDate);
-
-                if (isTradingDay) {
-                    // ĐANG TRONG PHIÊN: Ưu tiên giá realtime từ API
-                    if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
-                    else if (liveData.close !== undefined) finalClosePrice = liveData.close;
-                    else if (item.close_price !== undefined) finalClosePrice = item.close_price;
-                } else {
-                    // NGOÀI PHIÊN / NGÀY NGHỈ: Ưu tiên giá chốt từ nến cuối cùng để khớp Chart
-                    if (item.close_price !== undefined && item.close_price > 0) {
-                        finalClosePrice = item.close_price;
-                    } else if (mongoSI.close_price !== undefined && mongoSI.close_price > 0) {
-                        finalClosePrice = mongoSI.close_price;
-                    } else if (liveData.close_price !== undefined) {
-                        finalClosePrice = liveData.close_price;
-                    } else if (extraData.close !== undefined) {
-                        finalClosePrice = extraData.close;
-                    }
-                }
-                // ========================================================
+                let finalClosePrice = item.close_price || 0;
+                if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
+                else if (liveData.close !== undefined) finalClosePrice = liveData.close;
+                else if (extraData.close !== undefined) finalClosePrice = extraData.close;
 
                 return {
                     ...item,
@@ -298,6 +263,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     market_cap: extraData.market_cap !== undefined ? extraData.market_cap : (item.market_cap || 0),
                     total_shares: extraData.total_shares !== undefined ? extraData.total_shares : (item.total_shares || 0),
                     
+                    // === SỬA TẠI ĐÂY: ƯU TIÊN LẤY TỪ MONGODB (mongoSI -> liveData) TRƯỚC KHI LẤY TỪ FILE TĨNH (extraData) ===
                     eps: mongoSI.eps !== undefined ? mongoSI.eps : (liveData.eps !== undefined ? liveData.eps : (extraData.eps !== undefined ? extraData.eps : (item.eps || 0))),
                     dividend_yield: mongoSI.dividend_yield !== undefined ? mongoSI.dividend_yield : (liveData.dividend_yield !== undefined ? liveData.dividend_yield : (extraData.dividend_yield !== undefined ? extraData.dividend_yield : (item.dividend_yield || 0))),
                     pe: mongoSI.pe !== undefined ? mongoSI.pe : (liveData.pe !== undefined ? liveData.pe : (extraData.pe !== undefined ? extraData.pe : (item.pe || 0))),
@@ -308,7 +274,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     debt_to_equity: mongoSI.debt_to_equity !== undefined ? mongoSI.debt_to_equity : (liveData.debt_to_equity !== undefined ? liveData.debt_to_equity : (extraData.debt_to_equity !== undefined ? extraData.debt_to_equity : (item.debt_to_equity || 0))),
                     gross_margin: mongoSI.gross_margin !== undefined ? mongoSI.gross_margin : (liveData.gross_margin !== undefined ? liveData.gross_margin : (extraData.gross_margin !== undefined ? extraData.gross_margin : (item.gross_margin || 0))),
                     net_profit_ttm: mongoSI.net_profit_ttm !== undefined ? mongoSI.net_profit_ttm : (liveData.net_profit_ttm !== undefined ? liveData.net_profit_ttm : (extraData.net_profit_ttm !== undefined ? extraData.net_profit_ttm : (item.net_profit_ttm || 0))),
-                    
+                    // ================================================================================================
+
                     close_price: finalClosePrice,
                     updated_at: liveData.updated_at || extraData.updated_at || item.updated_at || "Chưa rõ", 
                     open: liveData.open !== undefined ? liveData.open : null,
@@ -370,6 +337,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             if (showSpinner && icon) icon.classList.remove('spinner');
         }
     }
+
     // ══════════════════════════════════════════════════
     // MODAL AI
     // ══════════════════════════════════════════════════
