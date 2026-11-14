@@ -216,25 +216,53 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 if (dataRes.ok) rawStockData = await dataRes.json();
             } catch (e) { console.warn("Không tải được data.json tĩnh"); }
 
-            // 2. Tải dữ liệu CHẤM ĐIỂM MỚI NHẤT từ API MongoDB
+            // 2. Tải dữ liệu CHẤM ĐIỂM MỚI NHẤT từ API MongoDB (CÓ RETRY KHI 503)
             let mongoScreener = [];
             let mongoPrices = {};
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000); // Đợi tối đa 5s
 
-                // Lấy cả dữ liệu chấm điểm và dữ liệu giá realtime từ MongoDB
-                const [mongoScreenerRes, mongoDataRes] = await Promise.all([
-                    fetch(`${PRICE_API_URL}/api/screener?t=` + new Date().getTime(), { signal: controller.signal }),
-                    fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: controller.signal })
-                ]);
-                clearTimeout(timeoutId);
-
-                if (mongoScreenerRes.ok) {
-                    const mJson = await mongoScreenerRes.json();
-                    mongoScreener = mJson.data || [];
+                // === FIX BUG #10: Retry 3 lần khi gặp 503 (screener đang ghi) ===
+                let mongoScreenerData = null;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        const res = await fetch(`${PRICE_API_URL}/api/screener?t=` + new Date().getTime(), { signal: controller.signal });
+                        
+                        if (res.status === 503) {
+                            // Backend đang ghi screener → chờ 2s rồi thử lại
+                            console.log(`[SCREENER] Đang cập nhật (503), thử lại lần ${attempt + 1}/3...`);
+                            await new Promise(r => setTimeout(r, 2000));
+                            continue;
+                        }
+                        
+                        if (res.ok) {
+                            const mJson = await res.json();
+                            mongoScreenerData = mJson.data || [];
+                            break;
+                        }
+                        
+                        // Lỗi khác → break luôn
+                        break;
+                    } catch (fetchErr) {
+                        if (fetchErr.name === 'AbortError') throw fetchErr;
+                        console.warn(`[SCREENER] Fetch lỗi lần ${attempt + 1}:`, fetchErr);
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
                 }
-                if (mongoDataRes.ok) {
+                
+                // Fetch /api/data (không bị 503)
+                let mongoDataRes = null;
+                try {
+                    mongoDataRes = await fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: controller.signal });
+                } catch (e) { console.warn("[API/DATA] Lỗi:", e); }
+                
+                clearTimeout(timeoutId);
+                
+                if (mongoScreenerData) {
+                    mongoScreener = mongoScreenerData;
+                }
+                if (mongoDataRes && mongoDataRes.ok) {
                     const mJson = await mongoDataRes.json();
                     mongoPrices = mJson.data || {};
                 }
@@ -263,7 +291,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     market_cap: extraData.market_cap !== undefined ? extraData.market_cap : (item.market_cap || 0),
                     total_shares: extraData.total_shares !== undefined ? extraData.total_shares : (item.total_shares || 0),
                     
-                    // === SỬA TẠI ĐÂY: ƯU TIÊN LẤY TỪ MONGODB (mongoSI -> liveData) TRƯỚC KHI LẤY TỪ FILE TĨNH (extraData) ===
+                    // === ƯU TIÊN LẤY TỪ MONGODB (mongoSI -> liveData) TRƯỚC KHI LẤY TỪ FILE TĨNH (extraData) ===
                     eps: mongoSI.eps !== undefined ? mongoSI.eps : (liveData.eps !== undefined ? liveData.eps : (extraData.eps !== undefined ? extraData.eps : (item.eps || 0))),
                     dividend_yield: mongoSI.dividend_yield !== undefined ? mongoSI.dividend_yield : (liveData.dividend_yield !== undefined ? liveData.dividend_yield : (extraData.dividend_yield !== undefined ? extraData.dividend_yield : (item.dividend_yield || 0))),
                     pe: mongoSI.pe !== undefined ? mongoSI.pe : (liveData.pe !== undefined ? liveData.pe : (extraData.pe !== undefined ? extraData.pe : (item.pe || 0))),
@@ -453,7 +481,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         let fairLow = item.fair_value_low || 0;
         let fairHigh = item.fair_value_high || 0;
-        // BỔ SUNG: Quy đổi fair_low và fair_high từ Nghìn VNĐ sang VNĐ để khớp với giá hiện tại
         if (fairLow > 0 && fairLow < 1000) fairLow *= 1000;
         if (fairHigh > 0 && fairHigh < 1000) fairHigh *= 1000;
         const verdict = item.valuation_verdict || "";
@@ -519,7 +546,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 aiSourceEl.className = "text-[9px] px-2 py-0.5 rounded border font-bold bg-indigo-500/20 text-indigo-300 border-indigo-500/40";
                 aiSourceEl.innerHTML = `<i class="fa-solid fa-robot mr-1"></i>AI`;
                 aiSourceEl.classList.remove('hidden');
-            } else if (src === "TEMPLATE_FALLBACK" || src === "auto-template") {
+            } else if (src === "TEMPLATE_FALLBACK" || src === "auto-template" || src === "TEMPLATE") {
                 aiSourceEl.className = "text-[9px] px-2 py-0.5 rounded border font-bold bg-slate-700/40 text-slate-300 border-slate-600/50";
                 aiSourceEl.innerHTML = `<i class="fa-solid fa-file-lines mr-1"></i>Template`;
                 aiSourceEl.classList.remove('hidden');
@@ -952,6 +979,11 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             if (!res.ok) throw new Error("Không lấy được dữ liệu lịch sử từ API");
             apiData = await res.json();
             if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
+            
+            // === FIX: Cập nhật lại cache để lần Refresh sau dùng dữ liệu mới ===
+            if (window.allHistoryCache) {
+                window.allHistoryCache[symbol] = { history_d1: apiData.history_d1 || [] };
+            }
         }
 
         const normalizeTime = (timeStr) => {
@@ -985,13 +1017,11 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         // SỬ DỤNG NGÀY TỪ UPDATED_AT THAY VÌ TRADING_DATE
         let todayStr = null;
         if (item && item.updated_at) {
-            // Lấy phần ngày từ chuỗi "12/11/2026 14:59:23" -> "2026-11-12"
             const parts = item.updated_at.split(' ')[0].split('/');
             if (parts.length === 3) {
                 todayStr = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
             }
         }
-        // Fallback nếu không parse được updated_at
         if (!todayStr) {
             const now = new Date();
             todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -1016,7 +1046,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 if (itemLow > 0)  currentSymbolHistory.history_d1[existingBarIndex].low  = Math.min(currentSymbolHistory.history_d1[existingBarIndex].low, itemLow);
                 if (itemVolume > 0) currentSymbolHistory.history_d1[existingBarIndex].volume = itemVolume;
             } else {
-                // Nới lỏng điều kiện: Nếu thiếu open/high/low, dùng giá close làm fallback
                 let finalOpen = itemOpen > 0 ? itemOpen : currentPrice;
                 let finalHigh = itemHigh > 0 ? itemHigh : currentPrice;
                 let finalLow = itemLow > 0 ? itemLow : currentPrice;
@@ -1046,19 +1075,16 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         renderChartInstance(currentSymbolHistory);
         
-        // KÍCH HOẠT TỰ ĐỘNG REFRESH (Chỉ khi mở mới, không phải khi bấm refresh tay)
         if (!isRefresh) {
             startChartAutoRefresh();
         }
         
-        // Tắt icon xoay của nút refresh
         const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
         if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
 
     } catch (err) {
         console.error("Lỗi tải biểu đồ:", err);
         document.getElementById('tv-chart-container').innerHTML = `<div class="flex items-center justify-center h-full text-rose-400 text-xs">Chưa có dữ liệu lịch sử cho mã này!</div>`;
-        // Tắt icon xoay của nút refresh
         const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
         if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
     } finally {
@@ -1251,7 +1277,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 if (totalBars > visibleBarsCount) chartInstance.timeScale().setVisibleLogicalRange({ from: totalBars - visibleBarsCount, to: totalBars - 1 });
                 else chartInstance.timeScale().fitContent();
                 
-                // Đảm bảo Legend hiển thị đúng nến mới nhất khi mới mở
                 if (latestBar) updateLegend(latestBar, chartData);
             }, 50);
         }
@@ -1317,7 +1342,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
                         chunk.forEach(sym => {
                             if (data.updated_data && data.updated_data[sym] !== undefined) {
-                                const newData = data.updated_data[sym]; // Lấy Object
+                                const newData = data.updated_data[sym];
                                 const item = screenerResults.find(s => s.symbol === sym);
                                 
                                 if (item) { 
@@ -1394,7 +1419,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             if (res.ok) {
                 const data = await res.json();
                 if (data.updated_data && data.updated_data[symbol] !== undefined) {
-                    const newData = data.updated_data[symbol]; // Lấy Object
+                    const newData = data.updated_data[symbol];
                     
                     const dataController = new AbortController();
                     const dataTimeoutId = setTimeout(() => dataController.abort(), 5000);
@@ -1433,7 +1458,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                         if (timeEl) {
                             timeEl.innerHTML = `<i class="fa-regular fa-clock mr-0.5"></i>${newData.updated_at || lastUpdateTime}`;
                         }
-                        // Cập nhật lại màu sắc / mũi tên nếu giao diện hỗ trợ
                         const pctEl = card.querySelector('.price-change-percent');
                         if (pctEl) {
                             pctEl.innerText = `${newData.price_arrow} ${newData.price_change_percent}%`;
@@ -1461,7 +1485,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     document.getElementById('search-input').addEventListener('input', renderCards);
     document.getElementById('sector-filter').addEventListener('change', renderCards);
     document.getElementById('ranking-filter').addEventListener('change', renderCards);
-    // ==================== HÀM XỬ LÝ NÚT CHẤM ĐIỂM & AI (TỪ MODAL) ====================
     
     // ==================== HÀM XỬ LÝ NÚT CHẤM ĐIỂM & AI (CÓ COOLDOWN CHỐNG SPAM) ====================
     
@@ -1480,27 +1503,31 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         
         if (!confirm(`Chấm điểm lại mã ${currentSymbol}?\n(Quá trình có thể mất 10-30 giây)`)) return;
         
-        // Bắt đầu khóa nút
         isRescoring = true;
         btn.disabled = true;
         btn.classList.add('opacity-50', 'cursor-not-allowed');
         icon.className = "fa-solid fa-spinner spinner";
         
         try {
-            // THÊM &key=${ADMIN_KEY} VÀO LINK
             const res = await fetch(`${PRICE_API_URL}/api/force-screener?key=${ADMIN_KEY}`);
-            const data = await res.json();
+            let data;
+            try { data = await res.json(); }
+            catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
             
             if (data.status === 'success') {
-                alert(`✅ Đã kích hoạt chấm điểm lại. Vui lòng đợi 1-2 phút rồi mở lại mã ${currentSymbol}.`);
+                alert(`✅ Đã kích hoạt chấm điểm lại.\nVui lòng đợi 1-2 phút rồi mở lại mã ${currentSymbol}.`);
                 closeModal();
+            } else if (res.status === 400 && (data.message || '').includes('đang chạy')) {
+                // Backend đang chạy screener (worker hoặc API khác) → thông báo thân thiện
+                alert(`⏳ Hệ thống đang chấm điểm (có thể do worker tự động).\nVui lòng đợi 1-2 phút rồi thử lại.`);
+            } else if (res.status === 403) {
+                alert(`🔒 Sai mật khẩu Admin. Kiểm tra lại ADMIN_KEY trên giao diện!`);
             } else {
-                alert(`❌ Lỗi: ${data.message}`);
+                alert(`❌ Lỗi: ${data.message || 'Không rõ nguyên nhân'}`);
             }
         } catch (e) {
             alert(`❌ Lỗi kết nối: ${e.message}`);
         } finally {
-            // Mở khóa nút sau 30 giây (Cooldown)
             setTimeout(() => {
                 isRescoring = false;
                 btn.disabled = false;
@@ -1522,35 +1549,50 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         
         if (!confirm(`Chạy AI phân tích cho mã ${currentSymbol}?\n(Quá trình có thể mất 40-50 giây)`)) return;
         
-        // Bắt đầu khóa nút
         isAIAnalyzing = true;
         btn.disabled = true;
         btn.classList.add('opacity-50', 'cursor-not-allowed');
         icon.className = "fa-solid fa-spinner spinner";
         
         try {
-            // SỬA TẠI ĐÂY: Thêm &key=${ADMIN_KEY} vào link
             const res = await fetch(`${PRICE_API_URL}/api/admin/force-ai-single?symbol=${currentSymbol}&key=${ADMIN_KEY}`);
-            const data = await res.json();
+            let data;
+            try { data = await res.json(); }
+            catch (pe) { data = { status: 'error', message: `HTTP ${res.status} — server không phản hồi JSON` }; }
             
             if (data.status === 'success') {
                 alert(`✅ Đã gửi lệnh chạy AI cho mã ${currentSymbol}.\nHệ thống đang xử lý, vui lòng đợi khoảng 45 giây...`);
                 
-                // Tăng thời gian chờ lên 45 giây cho AI viết xong
                 setTimeout(async () => {
                     isAIAnalyzing = false;
                     btn.disabled = false;
                     btn.classList.remove('opacity-50', 'cursor-not-allowed');
                     icon.className = "fa-solid fa-robot";
                     
-                    // Tải lại toàn bộ dữ liệu từ DB trước khi mở modal để lấy thông tin mới nhất
                     await loadData(false); 
                     openModal(currentSymbol); 
                 }, 45000);
 
+            } else if (res.status === 403) {
+                alert(`🔒 Sai mật khẩu Admin. Kiểm tra lại ADMIN_KEY!`);
+                isAIAnalyzing = false;
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                icon.className = "fa-solid fa-robot";
+            } else if (res.status === 404) {
+                alert(`⚠️ Mã ${currentSymbol} chưa đủ dữ liệu nền.\nHãy chạy "Chấm điểm" trước khi chạy AI.`);
+                isAIAnalyzing = false;
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                icon.className = "fa-solid fa-robot";
+            } else if (res.status === 400 && (data.message || '').includes('đang chạy')) {
+                alert(`⏳ Hệ thống đang chạy AI cho toàn bộ mã.\nVui lòng đợi hoàn tất rồi thử lại.`);
+                isAIAnalyzing = false;
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                icon.className = "fa-solid fa-robot";
             } else {
                 alert(`❌ Lỗi kích hoạt AI: ${data.message || 'Không rõ nguyên nhân'}`);
-                // Mở khóa nút ngay nếu có lỗi
                 isAIAnalyzing = false;
                 btn.disabled = false;
                 btn.classList.remove('opacity-50', 'cursor-not-allowed');
