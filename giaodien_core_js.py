@@ -909,150 +909,162 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
 
     async function openChartModal(symbol, isRefresh = false) {
-        currentSymbol = symbol;
-        
-        // Chỉ reset interval khi mở mới (không phải refresh)
-        if (!isRefresh) {
-            currentInterval = 'D1';
-            switchInterval('D1');
-        }
-        
-        document.getElementById('current-symbol-text').innerText = symbol;
-        document.getElementById('symbol-dropdown').classList.add('hidden');
-        document.getElementById('btn-view-ai').onclick = () => { closeChartModal(); openModal(symbol); };
-        updateChartWatchlistBtn(symbol);
-
-        const item = screenerResults.find(s => s.symbol === symbol);
-        if (item && item.updated_at) {
-            const cleanTime = item.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
-            document.getElementById('chart-last-update').innerText = cleanTime;
-        } else {
-            document.getElementById('chart-last-update').innerText = "Chưa rõ";
-        }
-
-        document.getElementById('chart-modal').classList.remove('hidden');
-        document.getElementById('chart-loading').classList.remove('hidden');
-
-        try {
-            // GỌI API MONGODB THAY VÌ FILE GITHUB
-            const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${symbol}&t=` + new Date().getTime());
-            if (!res.ok) throw new Error("Không lấy được dữ liệu lịch sử từ API");
-            
-            const apiData = await res.json();
-            if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
-
-            const normalizeTime = (timeStr) => {
-                if (!timeStr) return null;
-                if (typeof timeStr === 'number') {
-                    const d = new Date(timeStr * 1000);
-                    return d.toISOString().split('T')[0];
-                }
-                return timeStr.toString().split(' ')[0].split('T')[0];
-            };
-
-            // Chuẩn hóa dữ liệu nến ngày (nhân 1000 để đưa về đồng)
-            let normalizedD1 = (apiData.history_d1 || [])
-                .filter(bar => bar.time && bar.open > 0 && bar.close > 0)
-                .map(bar => ({
-                    time: normalizeTime(bar.time), 
-                    open: bar.open * 1000, high: bar.high * 1000, 
-                    low: bar.low * 1000, close: bar.close * 1000, 
-                    volume: bar.volume
-                }));
-
-            // Tự động gộp Tuần và Tháng từ Dữ liệu Ngày
-            currentSymbolHistory = {
-                history_d1: normalizedD1,
-                history_w1: aggregateCandles(normalizedD1, 'W1'),
-                history_mn: aggregateCandles(normalizedD1, 'MN')
-            };
-
-            let currentPrice = item ? (item.close_price !== undefined ? item.close_price : item.close) : 0;
-            
-            // SỬ DỤNG NGÀY TỪ UPDATED_AT THAY VÌ TRADING_DATE
-            let todayStr = null;
-            if (item && item.updated_at) {
-                // Lấy phần ngày từ chuỗi "12/11/2026 14:59:23" -> "2026-11-12"
-                const parts = item.updated_at.split(' ')[0].split('/');
-                if (parts.length === 3) {
-                    todayStr = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-                }
-            }
-            // Fallback nếu không parse được updated_at
-            if (!todayStr) {
-                const now = new Date();
-                todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            }
-
-            let itemOpen = (item.open || 0) * 1000;
-            let itemHigh = (item.high || 0) * 1000;
-            let itemLow = (item.low || 0) * 1000;
-            let itemVolume = item.volume || 0;
-            
-            if (currentPrice > 0 && currentPrice < 1000) currentPrice *= 1000;
-            if (itemOpen > 0 && itemOpen < 1000) itemOpen *= 1000;
-            if (itemHigh > 0 && itemHigh < 1000) itemHigh *= 1000;
-            if (itemLow > 0 && itemLow < 1000) itemLow *= 1000;
-
-            if (currentPrice > 0 && currentSymbolHistory.history_d1.length > 0) {
-                const existingBarIndex = currentSymbolHistory.history_d1.findIndex(b => b.time === todayStr);
-
-                if (existingBarIndex !== -1) {
-                    currentSymbolHistory.history_d1[existingBarIndex].close = currentPrice;
-                    if (itemHigh > 0) currentSymbolHistory.history_d1[existingBarIndex].high = Math.max(currentSymbolHistory.history_d1[existingBarIndex].high, itemHigh);
-                    if (itemLow > 0)  currentSymbolHistory.history_d1[existingBarIndex].low  = Math.min(currentSymbolHistory.history_d1[existingBarIndex].low, itemLow);
-                    if (itemVolume > 0) currentSymbolHistory.history_d1[existingBarIndex].volume = itemVolume;
-                } else {
-                    // Nới lỏng điều kiện: Nếu thiếu open/high/low, dùng giá close làm fallback
-                    let finalOpen = itemOpen > 0 ? itemOpen : currentPrice;
-                    let finalHigh = itemHigh > 0 ? itemHigh : currentPrice;
-                    let finalLow = itemLow > 0 ? itemLow : currentPrice;
-                    
-                    finalHigh = Math.max(finalHigh, finalOpen, currentPrice);
-                    finalLow = Math.min(finalLow, finalOpen, currentPrice);
-
-                    currentSymbolHistory.history_d1.push({
-                        time: todayStr, 
-                        open: finalOpen, 
-                        high: finalHigh, 
-                        low: finalLow, 
-                        close: currentPrice, 
-                        volume: itemVolume > 0 ? itemVolume : (currentSymbolHistory.history_d1.at(-1)?.volume || 0)
-                    });
-                }
-            }
-
-            currentSymbolHistory.history_d1.sort((a, b) => a.time.localeCompare(b.time));
-            currentSymbolHistory.history_d1 = currentSymbolHistory.history_d1.filter((v, i, a) => a.findIndex(t => t.time === v.time) === i);
-            
-            // Cập nhật lại W1/MN sau khi chèn nến realtime
-            currentSymbolHistory.history_w1 = aggregateCandles(currentSymbolHistory.history_d1, 'W1');
-            currentSymbolHistory.history_mn = aggregateCandles(currentSymbolHistory.history_d1, 'MN');
-
-            console.log("Nến cuối cùng chuẩn bị vẽ:", currentSymbolHistory.history_d1.at(-1));
-
-            renderChartInstance(currentSymbolHistory);
-            
-            // KÍCH HOẠT TỰ ĐỘNG REFRESH (Chỉ khi mở mới, không phải khi bấm refresh tay)
-            if (!isRefresh) {
-                startChartAutoRefresh();
-            }
-            
-            // Tắt icon xoay của nút refresh
-            const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
-            if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
-
-        } catch (err) {
-            console.error("Lỗi tải biểu đồ:", err);
-            document.getElementById('tv-chart-container').innerHTML = `<div class="flex items-center justify-center h-full text-rose-400 text-xs">Chưa có dữ liệu lịch sử cho mã này!</div>`;
-            // Tắt icon xoay của nút refresh
-            const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
-            if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
-        } finally {
-            document.getElementById('chart-loading').classList.add('hidden');
-        }
+    currentSymbol = symbol;
+    
+    // Chỉ reset interval khi mở mới (không phải refresh)
+    if (!isRefresh) {
+        currentInterval = 'D1';
+        switchInterval('D1');
     }
     
+    document.getElementById('current-symbol-text').innerText = symbol;
+    document.getElementById('symbol-dropdown').classList.add('hidden');
+    document.getElementById('btn-view-ai').onclick = () => { closeChartModal(); openModal(symbol); };
+    updateChartWatchlistBtn(symbol);
+
+    const item = screenerResults.find(s => s.symbol === symbol);
+    if (item && item.updated_at) {
+        const cleanTime = item.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
+        document.getElementById('chart-last-update').innerText = cleanTime;
+    } else {
+        document.getElementById('chart-last-update').innerText = "Chưa rõ";
+    }
+
+    document.getElementById('chart-modal').classList.remove('hidden');
+    document.getElementById('chart-loading').classList.remove('hidden');
+
+    try {
+        let apiData;
+        
+        // ✅ MỚI: Ưu tiên lấy từ cache (đã tải trước khi vào web)
+        if (!isRefresh && window.allHistoryCache && window.allHistoryCache[symbol]) {
+            apiData = {
+                status: "success",
+                symbol: symbol,
+                history_d1: window.allHistoryCache[symbol].history_d1 || [],
+                history_w1: [],
+                history_mn: []
+            };
+            console.log(`[CACHE HIT] ${symbol}: Hiện tức thì từ bộ nhớ`);
+        } else {
+            // Fallback: Gọi API nếu chưa có cache hoặc user bấm Refresh
+            const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${symbol}&t=` + new Date().getTime());
+            if (!res.ok) throw new Error("Không lấy được dữ liệu lịch sử từ API");
+            apiData = await res.json();
+            if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
+        }
+
+        const normalizeTime = (timeStr) => {
+            if (!timeStr) return null;
+            if (typeof timeStr === 'number') {
+                const d = new Date(timeStr * 1000);
+                return d.toISOString().split('T')[0];
+            }
+            return timeStr.toString().split(' ')[0].split('T')[0];
+        };
+
+        // Chuẩn hóa dữ liệu nến ngày (nhân 1000 để đưa về đồng)
+        let normalizedD1 = (apiData.history_d1 || [])
+            .filter(bar => bar.time && bar.open > 0 && bar.close > 0)
+            .map(bar => ({
+                time: normalizeTime(bar.time), 
+                open: bar.open * 1000, high: bar.high * 1000, 
+                low: bar.low * 1000, close: bar.close * 1000, 
+                volume: bar.volume
+            }));
+
+        // Tự động gộp Tuần và Tháng từ Dữ liệu Ngày
+        currentSymbolHistory = {
+            history_d1: normalizedD1,
+            history_w1: aggregateCandles(normalizedD1, 'W1'),
+            history_mn: aggregateCandles(normalizedD1, 'MN')
+        };
+
+        let currentPrice = item ? (item.close_price !== undefined ? item.close_price : item.close) : 0;
+        
+        // SỬ DỤNG NGÀY TỪ UPDATED_AT THAY VÌ TRADING_DATE
+        let todayStr = null;
+        if (item && item.updated_at) {
+            // Lấy phần ngày từ chuỗi "12/11/2026 14:59:23" -> "2026-11-12"
+            const parts = item.updated_at.split(' ')[0].split('/');
+            if (parts.length === 3) {
+                todayStr = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+            }
+        }
+        // Fallback nếu không parse được updated_at
+        if (!todayStr) {
+            const now = new Date();
+            todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        }
+
+        let itemOpen = (item.open || 0) * 1000;
+        let itemHigh = (item.high || 0) * 1000;
+        let itemLow = (item.low || 0) * 1000;
+        let itemVolume = item.volume || 0;
+        
+        if (currentPrice > 0 && currentPrice < 1000) currentPrice *= 1000;
+        if (itemOpen > 0 && itemOpen < 1000) itemOpen *= 1000;
+        if (itemHigh > 0 && itemHigh < 1000) itemHigh *= 1000;
+        if (itemLow > 0 && itemLow < 1000) itemLow *= 1000;
+
+        if (currentPrice > 0 && currentSymbolHistory.history_d1.length > 0) {
+            const existingBarIndex = currentSymbolHistory.history_d1.findIndex(b => b.time === todayStr);
+
+            if (existingBarIndex !== -1) {
+                currentSymbolHistory.history_d1[existingBarIndex].close = currentPrice;
+                if (itemHigh > 0) currentSymbolHistory.history_d1[existingBarIndex].high = Math.max(currentSymbolHistory.history_d1[existingBarIndex].high, itemHigh);
+                if (itemLow > 0)  currentSymbolHistory.history_d1[existingBarIndex].low  = Math.min(currentSymbolHistory.history_d1[existingBarIndex].low, itemLow);
+                if (itemVolume > 0) currentSymbolHistory.history_d1[existingBarIndex].volume = itemVolume;
+            } else {
+                // Nới lỏng điều kiện: Nếu thiếu open/high/low, dùng giá close làm fallback
+                let finalOpen = itemOpen > 0 ? itemOpen : currentPrice;
+                let finalHigh = itemHigh > 0 ? itemHigh : currentPrice;
+                let finalLow = itemLow > 0 ? itemLow : currentPrice;
+                
+                finalHigh = Math.max(finalHigh, finalOpen, currentPrice);
+                finalLow = Math.min(finalLow, finalOpen, currentPrice);
+
+                currentSymbolHistory.history_d1.push({
+                    time: todayStr, 
+                    open: finalOpen, 
+                    high: finalHigh, 
+                    low: finalLow, 
+                    close: currentPrice, 
+                    volume: itemVolume > 0 ? itemVolume : (currentSymbolHistory.history_d1.at(-1)?.volume || 0)
+                });
+            }
+        }
+
+        currentSymbolHistory.history_d1.sort((a, b) => a.time.localeCompare(b.time));
+        currentSymbolHistory.history_d1 = currentSymbolHistory.history_d1.filter((v, i, a) => a.findIndex(t => t.time === v.time) === i);
+        
+        // Cập nhật lại W1/MN sau khi chèn nến realtime
+        currentSymbolHistory.history_w1 = aggregateCandles(currentSymbolHistory.history_d1, 'W1');
+        currentSymbolHistory.history_mn = aggregateCandles(currentSymbolHistory.history_d1, 'MN');
+
+        console.log("Nến cuối cùng chuẩn bị vẽ:", currentSymbolHistory.history_d1.at(-1));
+
+        renderChartInstance(currentSymbolHistory);
+        
+        // KÍCH HOẠT TỰ ĐỘNG REFRESH (Chỉ khi mở mới, không phải khi bấm refresh tay)
+        if (!isRefresh) {
+            startChartAutoRefresh();
+        }
+        
+        // Tắt icon xoay của nút refresh
+        const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
+        if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
+
+    } catch (err) {
+        console.error("Lỗi tải biểu đồ:", err);
+        document.getElementById('tv-chart-container').innerHTML = `<div class="flex items-center justify-center h-full text-rose-400 text-xs">Chưa có dữ liệu lịch sử cho mã này!</div>`;
+        // Tắt icon xoay của nút refresh
+        const refreshBtnIcon = document.querySelector('#chart-refresh-btn i');
+        if (refreshBtnIcon) refreshBtnIcon.classList.remove('spinner');
+    } finally {
+        document.getElementById('chart-loading').classList.add('hidden');
+    }
+}
     function calculateMA(data, period) {
         let result = [];
         for (let i = 0; i < data.length; i++) {
@@ -1553,4 +1565,25 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         }
     }
     loadData(true);
+
+    // ══════════════════════════════════════════════════
+    // TẢI TRƯỚC TOÀN BỘ LỊCH SỬ ĐỒ THỊ (1 LẦN DUY NHẤT)
+    // ══════════════════════════════════════════════════
+    window.allHistoryCache = {};
+    setTimeout(async () => {
+        try {
+            console.log("🚀 Bắt đầu tải toàn bộ lịch sử đồ thị...");
+            const res = await fetch(`${PRICE_API_URL}/api/history-all`);
+            if (res.ok) {
+                const json = await res.json();
+                window.allHistoryCache = json.data || {};
+                console.log(`✅ Đã tải ${Object.keys(window.allHistoryCache).length} mã vào bộ nhớ đệm`);
+            } else {
+                console.warn("⚠️ Không tải được lịch sử toàn bộ, sẽ dùng API từng mã khi mở đồ thị.");
+            }
+        } catch (e) {
+            console.warn("Lỗi tải toàn bộ lịch sử:", e);
+        }
+    }, 3000); // Đợi 3 giây để loadData() xong, không làm nghẽn server
+
     """
