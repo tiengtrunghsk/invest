@@ -63,7 +63,7 @@ def build_admin_tools_tab_html(price_api_url):
         <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-700 mb-4">
             <h4 class="text-xs font-bold text-rose-400 mb-2"><i class="fa-solid fa-brain mr-1"></i>Chấm điểm & Phân tích AI</h4>
             <div class="grid grid-cols-1 gap-2">
-                <button onclick="callAdminApi('/api/force-screener', 'Chấm điểm lại toàn bộ')" class="admin-action-btn p-2 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-bold transition flex items-center justify-center gap-1">
+                <button onclick="callAdminApi('/api/force-screener', 'Chấm điểm lại toàn bộ', true)" class="admin-action-btn p-2 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-bold transition flex items-center justify-center gap-1">
                     <i class="fa-solid fa-calculator"></i> Chấm điểm lại toàn bộ
                 </button>
                 <button onclick="runAdminFullAI()" class="admin-action-btn p-2 bg-fuchsia-600 hover:bg-fuchsia-500 rounded text-xs font-bold transition flex items-center justify-center gap-1">
@@ -82,10 +82,10 @@ def build_admin_tools_tab_html(price_api_url):
         <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-700">
             <h4 class="text-xs font-bold text-amber-400 mb-2"><i class="fa-solid fa-power-off mr-1"></i>Điều khiển Cào Tự động</h4>
             <div class="grid grid-cols-2 gap-2">
-                <button onclick="callAdminApi('/api/pause-crawl', 'Tạm dừng cào')" class="admin-action-btn p-2 bg-red-900 hover:bg-red-800 border border-red-600 rounded text-[10px] font-bold transition flex items-center justify-center gap-1">
+                <button onclick="callAdminApi('/api/pause-crawl', 'Tạm dừng cào', true)" class="admin-action-btn p-2 bg-red-900 hover:bg-red-800 border border-red-600 rounded text-[10px] font-bold transition flex items-center justify-center gap-1">
                     <i class="fa-solid fa-pause text-red-400"></i> Tạm dừng
                 </button>
-                <button onclick="callAdminApi('/api/resume-crawl', 'Tiếp tục cào')" class="admin-action-btn p-2 bg-green-900 hover:bg-green-800 border border-green-600 rounded text-[10px] font-bold transition flex items-center justify-center gap-1">
+                <button onclick="callAdminApi('/api/resume-crawl', 'Tiếp tục cào', true)" class="admin-action-btn p-2 bg-green-900 hover:bg-green-800 border border-green-600 rounded text-[10px] font-bold transition flex items-center justify-center gap-1">
                     <i class="fa-solid fa-play text-green-400"></i> Tiếp tục
                 </button>
             </div>
@@ -101,7 +101,7 @@ def build_admin_tools_tab_html(price_api_url):
     // ==================== ADMIN TOOLS SCRIPT ====================
     (function() {{
         const ADMIN_API_URL = "{price_api_url}";
-        const ADMIN_SECRET = "959214"; // Mật khẩu Admin
+        const ADMIN_SECRET = "959214"; // Key bảo mật của bạn
         let adminIsBusy = false;
 
         function adminLog(msg, type = 'info') {{
@@ -166,7 +166,8 @@ def build_admin_tools_tab_html(price_api_url):
             }}
         }};
 
-        window.callAdminApi = async function(endpoint, actionName) {{
+        // Hàm callAdminApi nâng cấp: Nhận thêm tham số requireKey để quyết định có gửi key hay không
+        window.callAdminApi = async function(endpoint, actionName, requireKey = false) {{
             if (adminIsBusy) {{
                 alert("Server đang bận, vui lòng đợi!");
                 return;
@@ -175,12 +176,15 @@ def build_admin_tools_tab_html(price_api_url):
             adminLog(`Đang gửi yêu cầu: ${{actionName}}...`, "warning");
             toggleAdminBtns(false);
             
-            // TỰ ĐỘNG NỐI THÊM KEY VÀO URL (Nếu URL đã có dấu ? thì dùng &, chưa có thì dùng ?)
             let url = `${{ADMIN_API_URL}}${{endpoint}}`;
-            if (url.includes('?')) {{
-                url += `&key=${{ADMIN_SECRET}}`;
-            }} else {{
-                url += `?key=${{ADMIN_SECRET}}`;
+            
+            // Nếu API yêu cầu key (requireKey = true), tự động nối thêm ?key=
+            if (requireKey) {{
+                if (url.includes('?')) {{
+                    url += `&key=${{ADMIN_SECRET}}`;
+                }} else {{
+                    url += `?key=${{ADMIN_SECRET}}`;
+                }}
             }}
 
             try {{
@@ -199,6 +203,7 @@ def build_admin_tools_tab_html(price_api_url):
             }}
         }};
 
+        // Chạy AI toàn bộ (Truyền key bảo mật lên Server)
         window.runAdminFullAI = async function() {{
             if (adminIsBusy) return alert("Server đang bận!");
             if (!confirm("Chạy AI cho TOÀN BỘ 100 mã?\\nTiến trình có thể mất 5-10 phút.")) return;
@@ -207,7 +212,6 @@ def build_admin_tools_tab_html(price_api_url):
             toggleAdminBtns(false);
             
             try {{
-                // Đã thêm key trực tiếp vào link
                 const res = await fetch(`${{ADMIN_API_URL}}/api/admin/force-ai?key=${{ADMIN_SECRET}}`);
                 const data = await res.json();
                 if (data.status === 'success') {{
@@ -223,20 +227,20 @@ def build_admin_tools_tab_html(price_api_url):
             }}
         }};
 
+        // Test AI 1 mã (Truyền key bảo mật lên Server)
         window.runAdminSingleAI = async function() {{
             if (adminIsBusy) return alert("Server đang bận!");
             const symbol = document.getElementById('admin-ai-symbol-input').value.trim().toUpperCase();
             if (!symbol) return alert("Vui lòng nhập mã cổ phiếu!");
             
-            adminLog(`Đang chạy AI cho mã ${{symbol}}...`, "warning");
+            adminLog(`Đang kích hoạt AI cho mã ${{symbol}}...`, "warning");
             toggleAdminBtns(false);
             
             try {{
-                // Đã thêm key vào link
                 const res = await fetch(`${{ADMIN_API_URL}}/api/admin/force-ai-single?symbol=${{symbol}}&key=${{ADMIN_SECRET}}`);
                 const data = await res.json();
                 if (data.status === 'success') {{
-                    adminLog(`✅ AI đã phân tích xong ${{symbol}}:`, "success");
+                    adminLog(`✅ Đã gửi lệnh chạy AI cho ${{symbol}}.`, "success");
                     adminLog(`${{data.message}}`, "info");
                 }} else {{
                     adminLog(`❌ AI lỗi: ${{data.message}}`, "error");
@@ -278,7 +282,7 @@ def build_admin_tools_tab_html(price_api_url):
             }}
         }};
 
-        // Khởi động khi tab được mở
+        // Khởi động kiểm tra trạng thái khi tab được mở
         setTimeout(checkAdminStatus, 500);
     }})();
     </script>
