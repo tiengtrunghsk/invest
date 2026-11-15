@@ -1486,56 +1486,100 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     document.getElementById('sector-filter').addEventListener('change', renderCards);
     document.getElementById('ranking-filter').addEventListener('change', renderCards);
     
-    // ==================== HÀM XỬ LÝ NÚT CHẤM ĐIỂM & AI (CÓ COOLDOWN CHỐNG SPAM) ====================
-    
+    // ==================== CHẤM ĐIỂM RIÊNG / TOÀN THỊ TRƯỜNG ====================
+    // Nút trong modal gọi triggerRescore() -> chỉ chấm mã đang mở.
+    // Chức năng toàn thị trường gọi triggerRescoreAll() -> chạy force-screener.
     let isRescoring = false;
     let isAIAnalyzing = false;
 
     async function triggerRescore() {
-        if (!currentSymbol) return;
+        const symbol = (currentSymbol || '').trim().toUpperCase();
+        if (!symbol) return;
         if (isRescoring) {
             alert("Vui lòng đợi tiến trình chấm điểm hiện tại hoàn tất!");
             return;
         }
 
         const btn = document.getElementById('btn-modal-rescore');
-        const icon = btn.querySelector('i');
-        
-        if (!confirm(`Chấm điểm lại mã ${currentSymbol}?\n(Quá trình có thể mất 10-30 giây)`)) return;
-        
+        const icon = btn ? btn.querySelector('i') : null;
+        if (!confirm(`Chấm điểm RIÊNG mã ${symbol}?\\nChỉ cập nhật dữ liệu và điểm của mã này, không chạy toàn thị trường.`)) return;
+
         isRescoring = true;
-        btn.disabled = true;
-        btn.classList.add('opacity-50', 'cursor-not-allowed');
-        icon.className = "fa-solid fa-spinner spinner";
-        
+        if (btn) {
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+        if (icon) icon.className = "fa-solid fa-spinner spinner";
+
         try {
-            const res = await fetch(`${PRICE_API_URL}/api/force-screener?key=${ADMIN_KEY}`);
+            const url = `${PRICE_API_URL}/api/score-single?symbol=${encodeURIComponent(symbol)}&key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`;
+            const res = await fetch(url);
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
-            
-            if (data.status === 'success') {
-                alert(`✅ Đã kích hoạt chấm điểm lại.\nVui lòng đợi 1-2 phút rồi mở lại mã ${currentSymbol}.`);
-                closeModal();
-            } else if (res.status === 400 && (data.message || '').includes('đang chạy')) {
-                // Backend đang chạy screener (worker hoặc API khác) → thông báo thân thiện
-                alert(`⏳ Hệ thống đang chấm điểm (có thể do worker tự động).\nVui lòng đợi 1-2 phút rồi thử lại.`);
+
+            if (res.ok && data.status === 'success') {
+                await loadData(false);
+                if (screenerResults.some(item => item.symbol === symbol)) openModal(symbol);
+                const scoreData = data.data || {};
+                const total = scoreData.total_score !== undefined ? scoreData.total_score : '—';
+                const decision = scoreData.final_decision || 'Đã cập nhật';
+                alert(`✅ Đã chấm điểm RIÊNG ${symbol} thành công.\\nTổng điểm: ${total}/100\\nKết luận: ${decision}`);
+            } else if (res.status === 409 || data.status === 'busy' || (data.message || '').includes('đang chạy')) {
+                alert("⏳ Screener toàn thị trường đang chạy. Vui lòng đợi hoàn tất rồi chấm điểm riêng.");
             } else if (res.status === 403) {
-                alert(`🔒 Sai mật khẩu Admin. Kiểm tra lại ADMIN_KEY trên giao diện!`);
+                alert("🔒 Sai mật khẩu Admin. Kiểm tra lại ADMIN_KEY trên giao diện!");
+            } else if (res.status === 404) {
+                alert(`⚠️ API chấm điểm riêng chưa có trên Render hoặc không tìm thấy mã ${symbol}.`);
             } else {
-                alert(`❌ Lỗi: ${data.message || 'Không rõ nguyên nhân'}`);
+                alert(`❌ Không chấm được ${symbol}: ${data.message || `HTTP ${res.status}`}`);
+            }
+        } catch (e) {
+            alert(`❌ Lỗi kết nối khi chấm điểm ${symbol}: ${e.message}`);
+        } finally {
+            isRescoring = false;
+            if (btn) {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+            if (icon) icon.className = "fa-solid fa-calculator";
+        }
+    }
+
+    // Chỉ dành cho nút Admin chạy chấm điểm toàn bộ thị trường.
+    async function triggerRescoreAll() {
+        if (isRescoring) {
+            alert("Vui lòng đợi tiến trình chấm điểm hiện tại hoàn tất!");
+            return;
+        }
+        if (!confirm("Chấm điểm TOÀN BỘ thị trường?\\nQuá trình có thể mất vài phút.")) return;
+
+        isRescoring = true;
+        try {
+            const res = await fetch(`${PRICE_API_URL}/api/force-screener?key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`);
+            let data;
+            try { data = await res.json(); }
+            catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
+
+            if (res.ok && data.status === 'success') {
+                alert("✅ Đã kích hoạt chấm điểm TOÀN BỘ thị trường.\\nScreener đang chạy nền; chờ hoàn tất rồi tải lại dữ liệu.");
+            } else if (res.status === 400 && (data.message || '').includes('đang chạy')) {
+                alert("⏳ Screener toàn thị trường đang chạy. Vui lòng chờ tiến trình hiện tại hoàn tất.");
+            } else if (res.status === 403) {
+                alert("🔒 Sai mật khẩu Admin. Kiểm tra lại ADMIN_KEY trên giao diện!");
+            } else {
+                alert(`❌ Không thể chạy Screener toàn thị trường: ${data.message || `HTTP ${res.status}`}`);
             }
         } catch (e) {
             alert(`❌ Lỗi kết nối: ${e.message}`);
         } finally {
-            setTimeout(() => {
-                isRescoring = false;
-                btn.disabled = false;
-                btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                icon.className = "fa-solid fa-calculator";
-            }, 30000); 
+            isRescoring = false;
         }
     }
+
+    // Giữ tên hàm cũ cho nút modal, đồng thời công khai hàm chạy toàn thị trường.
+    window.triggerRescore = triggerRescore;
+    window.triggerRescoreAll = triggerRescoreAll;
 
     async function triggerAIAnalyze() {
         if (!currentSymbol) return;
