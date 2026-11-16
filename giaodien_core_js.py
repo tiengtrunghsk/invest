@@ -46,7 +46,22 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     };
 
     // ══════════════════════════════════════════════════
-    // AUTH HOOKS
+    // CÁC HÀM KIỂM TRA QUYỀN (BẢN CHUẨN)
+    // ══════════════════════════════════════════════════
+    function isSuperAdmin() {
+        if (!currentUser) return false;
+        var role = (currentUser.role || '').toLowerCase().trim();
+        return role === 'super_admin';
+    }
+
+    function isAdmin() {
+        if (!currentUser) return false;
+        var role = (currentUser.role || '').toLowerCase().trim();
+        return role === 'admin' || role === 'super_admin';
+    }
+
+    // ══════════════════════════════════════════════════
+    // AUTH HOOKS (ĐÃ FIX LỖI SUPER ADMIN)
     // ══════════════════════════════════════════════════
     function parseDate(val) {
         if (!val) return null;
@@ -57,31 +72,58 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
     window.onAuthReady = async function(user) {
         currentUser = user;
+        
+        // 1. Tải watchlist trước
         await loadUserWatchlist(user.uid);
+        
         try {
+            // 2. Lấy thông tin role từ Firestore
             const doc = await window.db.collection('allowed_users').doc(user.email.toLowerCase()).get();
             if (doc.exists) {
-                const role = doc.data().role;
-                // Nếu là admin hoặc super_admin thì hiện nút Admin Panel
-                if (role === 'admin' || role === 'super_admin') {
-                    const adminBtn = document.getElementById('btn-admin-panel');
-                    if (adminBtn) { adminBtn.classList.remove('hidden'); adminBtn.classList.add('flex'); }
-                }
-                // CHỈ Super Admin mới thấy 2 nút chạy AI và Chấm điểm
-                if (role === 'super_admin') {
-                    const btnRescore = document.getElementById('btn-modal-rescore');
-                    const btnAI = document.getElementById('btn-modal-ai');
-                    if (btnRescore) btnRescore.classList.remove('hidden');
-                    if (btnAI) btnAI.classList.remove('hidden');
-                }
+                const data = doc.data();
+                // Chuẩn hóa role: chữ thường, xóa khoảng trắng thừa
+                const role = (data.role || '').toLowerCase().trim(); 
+                
+                // Gán cứng role vào currentUser để các hàm khác dùng chung
+                currentUser.role = role; 
             }
-        } catch (e) { console.warn('Không kiểm tra được role:', e); }
+        } catch (e) { 
+            console.warn('Lỗi lấy role từ Firestore (dùng fallback):', e); 
+            if (!currentUser.role) currentUser.role = 'user';
+        }
+
+        // 3. HIỂN THỊ NÚT DỰA TRÊN ROLE
+        const role = (currentUser.role || '').toLowerCase().trim();
+        
+        if (role === 'admin' || role === 'super_admin') {
+            const adminBtn = document.getElementById('btn-admin-panel');
+            if (adminBtn) { 
+                adminBtn.classList.remove('hidden'); 
+                adminBtn.classList.add('flex'); 
+            }
+        }
+        
+        if (role === 'super_admin') {
+            const btnRescore = document.getElementById('btn-modal-rescore');
+            const btnAI = document.getElementById('btn-modal-ai');
+            if (btnRescore) btnRescore.classList.remove('hidden');
+            if (btnAI) btnAI.classList.remove('hidden');
+        }
+
+        // 4. Tải dữ liệu chính
         if (typeof loadData === 'function') loadData(true);
     };
 
     window.onAuthLogout = function() {
         currentUser = null;
         userWatchlist = new Set();
+        
+        const adminBtn = document.getElementById('btn-admin-panel');
+        if (adminBtn) { adminBtn.classList.add('hidden'); adminBtn.classList.remove('flex'); }
+        const btnRescore = document.getElementById('btn-modal-rescore');
+        const btnAI = document.getElementById('btn-modal-ai');
+        if (btnRescore) btnRescore.classList.add('hidden');
+        if (btnAI) btnAI.classList.add('hidden');
     };
 
     // ══════════════════════════════════════════════════
