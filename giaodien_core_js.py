@@ -37,6 +37,44 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     let chartAutoUpdateInterval = null; // Biến lưu bộ đếm tự động refresh đồ thị
     let chartRequestSequence = 0;
 
+    // Cache lịch sử biểu đồ theo từng mã; cache trình duyệt theo phiên để mở lại tức thì.
+    const CHART_HISTORY_CACHE_TTL = 60 * 1000;
+    const CHART_HISTORY_CACHE_PREFIX = 'invest_chart_history_v1_';
+    const chartHistoryMemoryCache = new Map();
+
+    function readChartHistoryCache(symbol, allowStale = false) {
+        const key = CHART_HISTORY_CACHE_PREFIX + String(symbol || '').toUpperCase();
+        const memory = chartHistoryMemoryCache.get(key);
+        if (memory && (allowStale || Date.now() - memory.cachedAt < CHART_HISTORY_CACHE_TTL)) return memory.data;
+        try {
+            const raw = sessionStorage.getItem(key);
+            if (!raw) return null;
+            const saved = JSON.parse(raw);
+            if (!saved || !saved.cachedAt || !saved.data) {
+                sessionStorage.removeItem(key);
+                return null;
+            }
+            if (!allowStale && Date.now() - saved.cachedAt >= CHART_HISTORY_CACHE_TTL) return null;
+            chartHistoryMemoryCache.set(key, saved);
+            return saved.data;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function writeChartHistoryCache(symbol, data) {
+        if (!data || data.status !== 'success' || !Array.isArray(data.history_d1)) return;
+        const key = CHART_HISTORY_CACHE_PREFIX + String(symbol || '').toUpperCase();
+        const entry = { cachedAt: Date.now(), data: data };
+        chartHistoryMemoryCache.set(key, entry);
+        try {
+            sessionStorage.setItem(key, JSON.stringify(entry));
+        } catch (_) {
+            // Nếu bộ nhớ trình duyệt đầy, vẫn giữ cache RAM trong phiên hiện tại.
+        }
+    }
+
+
     // ══════════════════════════════════════════════════
     // DICT STYLE
     // ══════════════════════════════════════════════════
@@ -1014,15 +1052,26 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     document.getElementById('chart-loading').classList.remove('hidden');
 
     try {
-        // Chỉ tải lịch sử của mã đang xem; tránh tải toàn bộ thị trường khi mở trang.
-        const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`, { cache: "no-store" });
-        if (!res.ok) {
-            let message = "Không lấy được dữ liệu lịch sử từ API";
-            try { const errData = await res.json(); message = errData.message || message; } catch (_) {}
-            throw new Error(message);
+        // Mở lại biểu đồ dùng cache còn hạn; refresh tay/tự động luôn lấy dữ liệu mới.
+        let apiData = !isRefresh ? readChartHistoryCache(symbol) : null;
+        if (!apiData) {
+            try {
+                const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+                if (!res.ok) {
+                    let message = "Không lấy được dữ liệu lịch sử từ API";
+                    try { const errData = await res.json(); message = errData.message || message; } catch (_) {}
+                    throw new Error(message);
+                }
+                apiData = await res.json();
+                if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
+                writeChartHistoryCache(symbol, apiData);
+            } catch (networkError) {
+                // Khi API tạm lỗi, ưu tiên dùng dữ liệu cache cũ để biểu đồ vẫn xem được.
+                apiData = readChartHistoryCache(symbol, true);
+                if (!apiData) throw networkError;
+                console.warn("API biểu đồ lỗi, đang dùng cache gần nhất:", networkError);
+            }
         }
-        const apiData = await res.json();
-        if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
         if (requestId !== chartRequestSequence || currentSymbol !== symbol) return;
 
         const normalizeTime = (timeStr) => {
