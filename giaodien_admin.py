@@ -56,7 +56,7 @@ def build_admin_tools_tab_html(price_api_url):
       <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-700 mb-4">
         <h4 class="text-xs font-bold text-amber-400 mb-2"><i class="fa-solid fa-power-off mr-1"></i>Điều khiển Cào Tự động</h4>
         <div class="grid grid-cols-2 gap-2">
-          <button onclick="callAdminApi('/api/pause-crawl','Tạm dừng cào',true)" class="admin-action-btn p-2 bg-red-900 border border-red-600 rounded text-[10px] font-bold">Tạm dừng</button>
+          <button id="admin-stop-realtime-btn" onclick="callAdminApi('/api/pause-crawl','Dừng phiên cào realtime',true)" class="admin-action-btn p-2 bg-red-900 border border-red-600 rounded text-[10px] font-bold">Dừng phiên cào</button>
           <button onclick="callAdminApi('/api/resume-crawl','Tiếp tục cào',true)" class="admin-action-btn p-2 bg-green-900 border border-green-600 rounded text-[10px] font-bold">Tiếp tục</button>
         </div>
       </div>
@@ -71,13 +71,16 @@ def build_admin_tools_tab_html(price_api_url):
       const ADMIN_API_URL = "{price_api_url}".replace(/\/$/, "");
       let statusTimer = null;
       let requestBusy = false;
+      let realtimeIsRunning = false;
       let activeTaskType = null;
       const actionButtons = () => Array.from(document.querySelectorAll('#adminTabTools .admin-action-btn'));
-      function setButtonsBusy(busy, activeButton) {{
+      function setButtonsBusy(busy, activeButton, realtimeRunning) {{
+        const stopBtn = document.getElementById('admin-stop-realtime-btn');
         actionButtons().forEach(btn => {{
-          btn.disabled = !!busy;
-          btn.classList.toggle('opacity-50', !!busy && btn !== activeButton);
-          btn.classList.toggle('cursor-not-allowed', !!busy);
+          const canStopRealtime = !!realtimeRunning && btn === stopBtn;
+          btn.disabled = !!busy && !canStopRealtime;
+          btn.classList.toggle('opacity-50', !!busy && !canStopRealtime && btn !== activeButton);
+          btn.classList.toggle('cursor-not-allowed', !!busy && !canStopRealtime);
         }});
       }}
       function buttonFeedback(btn, state) {{
@@ -115,7 +118,10 @@ def build_admin_tools_tab_html(price_api_url):
             getJson(ADMIN_API_URL + '/api/admin/progress')
           ]);
           const serverEl = document.getElementById('admin-crawl-status');
-          if (serverEl) serverEl.innerText = server.data.is_crawling ? 'REALTIME ĐANG CHẠY' : (server.data.is_paused ? 'TẠM DỪNG' : 'SẴN SÀNG');
+          const realtimeRunning = !!server.data.is_crawling;
+          realtimeIsRunning = realtimeRunning;
+          const realtimeJob = server.data.realtime_progress || {{}};
+          if (serverEl) serverEl.innerText = realtimeRunning ? 'REALTIME ĐANG CÀO' : (server.data.is_paused ? 'ĐÃ DỪNG / TẠM NGHỈ' : 'SẴN SÀNG');
           const job = history.data.job || {{}};
           const stateEl = document.getElementById('admin-history-state');
           const detailEl = document.getElementById('admin-history-detail');
@@ -127,16 +133,19 @@ def build_admin_tools_tab_html(price_api_url):
           if (job.status === 'running' && !statusTimer) statusTimer = setInterval(window.checkAdminStatus, 5000);
           const adminJob = adminProgress.data.job || {{}};
           const taskActive = adminJob.status === 'running';
-          setButtonsBusy(requestBusy || taskActive || job.status === 'running');
-          const taskPct = adminJob.total ? Math.min(100, Math.round((adminJob.completed || 0) * 100 / adminJob.total)) : 0;
+          const displayJob = realtimeRunning ? realtimeJob : adminJob;
+          const displayTaskActive = realtimeRunning || taskActive;
+          const anyLongTask = taskActive || job.status === 'running' || realtimeRunning;
+          setButtonsBusy(requestBusy || anyLongTask, null, realtimeRunning);
+          const taskPct = displayJob.total ? Math.min(100, Math.round((displayJob.completed || 0) * 100 / displayJob.total)) : 0;
           const title = document.getElementById('admin-task-title');
           const pctEl = document.getElementById('admin-task-percent');
           const taskBar = document.getElementById('admin-task-progress');
           const detail = document.getElementById('admin-task-detail');
-          if (title) title.innerText = adminJob.job_type || 'Tác vụ quản trị';
-          if (pctEl) pctEl.innerText = taskActive && !adminJob.total ? '...' : taskPct + '%';
-          if (taskBar) taskBar.style.width = (taskActive && !adminJob.total ? 8 : taskPct) + '%';
-          if (detail) detail.innerText = (adminJob.message || 'Chưa có tác vụ') + ' | ' + (adminJob.current_symbol ? 'Đang xử lý: ' + adminJob.current_symbol + ' | ' : '') + (adminJob.completed || 0) + '/' + (adminJob.total || 0) + ' mã | Thành công: ' + (adminJob.success || 0) + ' | Lỗi: ' + (adminJob.failed || 0);
+          if (title) title.innerText = displayJob.job_type || 'Tác vụ quản trị';
+          if (pctEl) pctEl.innerText = displayTaskActive && !displayJob.total ? '...' : taskPct + '%';
+          if (taskBar) taskBar.style.width = (displayTaskActive && !displayJob.total ? 8 : taskPct) + '%';
+          if (detail) detail.innerText = (displayJob.message || 'Chưa có tác vụ') + ' | ' + (displayJob.current_symbol ? 'Đang xử lý: ' + displayJob.current_symbol + ' | ' : '') + (displayJob.completed || 0) + '/' + (displayJob.total || 0) + ' mã | Thành công: ' + (displayJob.success || 0) + ' | Lỗi: ' + (displayJob.failed || 0) + (realtimeRunning ? ' | Nhấn Dừng phiên cào để mở khóa tác vụ khác' : '');
           if (taskActive) {{
             if (!statusTimer) statusTimer = setInterval(window.checkAdminStatus, 4000);
           }} else if (job.status !== 'running' && statusTimer) {{ clearInterval(statusTimer); statusTimer = null; }}
@@ -147,12 +156,12 @@ def build_admin_tools_tab_html(price_api_url):
         if (requestBusy) {{ log('Đang gửi yêu cầu khác, vui lòng đợi...', 'warning'); return; }}
         const clickedButton = document.activeElement && document.activeElement.classList.contains('admin-action-btn') ? document.activeElement : null;
         requestBusy = true;
-        setButtonsBusy(true, clickedButton);
+        setButtonsBusy(true, clickedButton, realtimeIsRunning);
         buttonFeedback(clickedButton, 'admin-btn-loading');
         let url = ADMIN_API_URL + endpoint;
         if (requireKey) {{
           const key = prompt('Nhập ADMIN_API_KEY đã cấu hình trên server:');
-          if (!key) {{ requestBusy = false; setButtonsBusy(false); buttonFeedback(clickedButton, null); return; }}
+          if (!key) {{ requestBusy = false; setButtonsBusy(false, null, realtimeIsRunning); buttonFeedback(clickedButton, null); return; }}
           url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
         }}
         log('Đang gửi yêu cầu: ' + actionName + '...', 'warning');
@@ -173,7 +182,8 @@ def build_admin_tools_tab_html(price_api_url):
         }} finally {{
           setTimeout(() => {{
             requestBusy = false;
-            setButtonsBusy(false);
+            setButtonsBusy(false, null, realtimeIsRunning);
+            window.checkAdminStatus();
             if (clickedButton) setTimeout(() => buttonFeedback(clickedButton, null), 1800);
           }}, 900);
         }}
