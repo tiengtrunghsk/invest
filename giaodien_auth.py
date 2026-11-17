@@ -22,7 +22,8 @@ def build_auth_lite_css():
             box-sizing: border-box !important;
             opacity: 1;
             visibility: visible;
-            pointer-events: auto;
+            /* Cho phép vuốt/cuộn trang nền; chỉ hộp đăng nhập nhận tương tác. */
+            pointer-events: none;
             transition: opacity 0.28s ease, visibility 0s linear 0s;
             overflow-x: hidden !important;
             overflow-y: auto !important;
@@ -49,7 +50,9 @@ def build_auth_lite_css():
 
         /* 3. HỘP ĐĂNG NHẬP CĂN GIỮA */
         .auth-box { 
-            background: linear-gradient(145deg, #1e293b, #0f172a); 
+            background: linear-gradient(145deg, #1e293b, #0f172a);
+            /* Modal vẫn nhận thao tác và đứng cố định giữa viewport. */
+            pointer-events: auto; 
             border: 1px solid rgba(51, 65, 85, 0.8); 
             border-radius: 20px; 
             width: 100%; 
