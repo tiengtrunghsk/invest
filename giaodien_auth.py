@@ -703,7 +703,40 @@ def build_auth_lite_js(config):
                 }
             });
 
-            async function checkUserPermission(user) {
+            // Đồng bộ nút quản trị kể cả khi header được render trễ sau Firebase Auth.
+            var adminHeaderObserver = null;
+            function syncAdminHeaderButton(role) {
+                var isAdmin = role === 'admin' || role === 'super_admin';
+                var applyVisibility = function() {
+                    var btnChat = document.getElementById('btn-admin-chat-header');
+                    if (!btnChat) return false;
+                    btnChat.classList.toggle('hidden', !isAdmin);
+                    if (isAdmin) btnChat.classList.add('flex');
+                    else btnChat.classList.remove('flex');
+                    return true;
+                };
+
+                if (applyVisibility()) {
+                    if (adminHeaderObserver) {
+                        adminHeaderObserver.disconnect();
+                        adminHeaderObserver = null;
+                    }
+                    return;
+                }
+
+                if (isAdmin && !adminHeaderObserver && document.documentElement) {
+                    adminHeaderObserver = new MutationObserver(function() {
+                        if (applyVisibility()) {
+                            adminHeaderObserver.disconnect();
+                            adminHeaderObserver = null;
+                        }
+                    });
+                    adminHeaderObserver.observe(document.documentElement, { childList: true, subtree: true });
+                }
+            }
+
+            async function checkUserPermission(user, retryCount) {
+                retryCount = retryCount || 0;
                 var email = user.email.toLowerCase();
                 try {
                     var doc = await db.collection('allowed_users').doc(email).get();
@@ -720,6 +753,7 @@ def build_auth_lite_js(config):
                         });
                         updateExpireUI(expireDate);
                         currentUserRole = isSuperAdmin ? 'super_admin' : 'user';
+                        syncAdminHeaderButton(currentUserRole);
                         return false; 
                     } else {
                         var data = doc.data();
@@ -734,14 +768,7 @@ def build_auth_lite_js(config):
                         }
                         
                         currentUserRole = currentRole;
-                        
-                        if (currentRole === 'admin' || currentRole === 'super_admin') {
-                            var btnChat = document.getElementById('btn-admin-chat-header');
-                            if (btnChat) {
-                                btnChat.classList.remove('hidden');
-                                btnChat.classList.add('flex');
-                            }
-                        }
+                        syncAdminHeaderButton(currentRole);
 
                         var expDateObj = parseDate(data.expiresAt);
                         
@@ -752,7 +779,16 @@ def build_auth_lite_js(config):
                             }
                         }
                     }
-                } catch(e) { console.warn('Lỗi check quyền:', e); }
+                } catch(e) {
+                    console.warn('Lỗi check quyền:', e);
+                    // Firebase có thể chưa sẵn sàng hoặc request đầu bị chập chờn.
+                    // Thử kiểm tra lại nền, không bắt người dùng F5.
+                    if (retryCount < 3 && window.auth && window.auth.currentUser && window.auth.currentUser.uid === user.uid) {
+                        setTimeout(function() {
+                            checkUserPermission(user, retryCount + 1);
+                        }, 1500 * (retryCount + 1));
+                    }
+                }
                 return false;
             }
 
