@@ -15,9 +15,9 @@ def build_auth_lite_css():
             min-height: 100dvh !important;
             z-index: 99999999 !important;
             background: #0f172a !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
+            display: grid !important;
+            place-items: center !important;
+            align-content: center !important;
             padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left)) !important;
             box-sizing: border-box !important;
             opacity: 1;
@@ -26,6 +26,7 @@ def build_auth_lite_css():
             transition: opacity 0.28s ease, visibility 0s linear 0s;
             overflow-x: hidden !important;
             overflow-y: auto !important;
+            touch-action: pan-y !important;
             overscroll-behavior: contain;
             -webkit-overflow-scrolling: touch;
         }
@@ -38,8 +39,11 @@ def build_auth_lite_css():
 
         /* Khóa cuộn nền nhưng không cố định body (tránh giật vị trí trên iOS). */
         body.auth-locked {
-            overflow: hidden !important;
-            overscroll-behavior: none;
+            overflow: auto !important;
+            height: auto !important;
+            position: static !important;
+            touch-action: pan-y !important;
+            overscroll-behavior: auto;
             width: 100% !important;
         }
 
@@ -56,6 +60,8 @@ def build_auth_lite_css():
             color: #f1f5f9; 
             box-sizing: border-box;
             margin: auto !important;
+            justify-self: center;
+            align-self: center;
             max-height: calc(100vh - 2rem);
             max-height: calc(100dvh - 2rem);
             overflow-y: auto;
