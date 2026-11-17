@@ -12,7 +12,15 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     // ══════════════════════════════════════════════════
     // STATE
     // ══════════════════════════════════════════════════
-    const ADMIN_KEY = "959214"; // Mật khẩu Admin (phải giống trên Render)
+    // Không nhúng khóa quản trị vào HTML tĩnh.
+    let adminKeySession = null;
+    function getAdminKeySession() {
+        if (adminKeySession) return adminKeySession;
+        const entered = prompt("Nhập ADMIN_SECRET_KEY đã cấu hình trên Render:");
+        if (!entered || !entered.trim()) return null;
+        adminKeySession = entered.trim();
+        return adminKeySession;
+    }
     let screenerResults = [];
     let symbolSimRates = {};
     let quarterlyMeanDetails = {};
@@ -27,6 +35,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     let userWatchlist = new Set();
     let currentUser = null;
     let chartAutoUpdateInterval = null; // Biến lưu bộ đếm tự động refresh đồ thị
+    let chartRequestSequence = 0;
 
     // ══════════════════════════════════════════════════
     // DICT STYLE
@@ -873,17 +882,17 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (!d1Data || d1Data.length === 0) return [];
         if (interval === 'D1') return d1Data;
 
-        let grouped = {};
+        const grouped = {};
         d1Data.forEach(bar => {
-            const date = new Date(bar.time);
+            const date = new Date(bar.time + (String(bar.time).length === 10 ? 'T00:00:00Z' : ''));
             let key;
             if (interval === 'W1') {
-                const day = date.getDay();
-                const diff = date.getDate() - day + (day === 0 ? -6 : 1);
-                const monday = new Date(date.setDate(diff));
-                key = monday.toISOString().split('T')[0];
+                const weekday = date.getUTCDay();
+                const daysFromMonday = (weekday + 6) % 7;
+                const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - daysFromMonday));
+                key = monday.toISOString().slice(0, 10);
             } else { // MN
-                key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
+                key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
             }
 
             if (!grouped[key]) {
@@ -966,6 +975,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
 
     function closeChartModal() {
+        chartRequestSequence++;
         document.getElementById('chart-modal').classList.add('hidden');
         if (chartInstance) { chartInstance.remove(); chartInstance = null; }
         currentSymbolHistory = null;
@@ -978,6 +988,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
 
     async function openChartModal(symbol, isRefresh = false) {
+    const requestId = ++chartRequestSequence;
     currentSymbol = symbol;
     
     // Chỉ reset interval khi mở mới (không phải refresh)
@@ -1003,30 +1014,16 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     document.getElementById('chart-loading').classList.remove('hidden');
 
     try {
-        let apiData;
-        
-        // ✅ MỚI: Ưu tiên lấy từ cache (đã tải trước khi vào web)
-        if (!isRefresh && window.allHistoryCache && window.allHistoryCache[symbol]) {
-            apiData = {
-                status: "success",
-                symbol: symbol,
-                history_d1: window.allHistoryCache[symbol].history_d1 || [],
-                history_w1: [],
-                history_mn: []
-            };
-            console.log(`[CACHE HIT] ${symbol}: Hiện tức thì từ bộ nhớ`);
-        } else {
-            // Fallback: Gọi API nếu chưa có cache hoặc user bấm Refresh
-            const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${symbol}&t=` + new Date().getTime());
-            if (!res.ok) throw new Error("Không lấy được dữ liệu lịch sử từ API");
-            apiData = await res.json();
-            if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
-            
-            // === FIX: Cập nhật lại cache để lần Refresh sau dùng dữ liệu mới ===
-            if (window.allHistoryCache) {
-                window.allHistoryCache[symbol] = { history_d1: apiData.history_d1 || [] };
-            }
+        // Chỉ tải lịch sử của mã đang xem; tránh tải toàn bộ thị trường khi mở trang.
+        const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) {
+            let message = "Không lấy được dữ liệu lịch sử từ API";
+            try { const errData = await res.json(); message = errData.message || message; } catch (_) {}
+            throw new Error(message);
         }
+        const apiData = await res.json();
+        if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
+        if (requestId !== chartRequestSequence || currentSymbol !== symbol) return;
 
         const normalizeTime = (timeStr) => {
             if (!timeStr) return null;
@@ -1037,15 +1034,21 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             return timeStr.toString().split(' ')[0].split('T')[0];
         };
 
-        // Chuẩn hóa dữ liệu nến ngày (nhân 1000 để đưa về đồng)
-        let normalizedD1 = (apiData.history_d1 || [])
-            .filter(bar => bar.time && bar.open > 0 && bar.close > 0)
-            .map(bar => ({
-                time: normalizeTime(bar.time), 
-                open: bar.open * 1000, high: bar.high * 1000, 
-                low: bar.low * 1000, close: bar.close * 1000, 
-                volume: bar.volume
-            }));
+        // DB chuẩn dùng nghìn đồng; tương thích dữ liệu cũ còn lưu theo đồng.
+        const toChartPrice = value => {
+            let n = Number(value);
+            if (!Number.isFinite(n) || n <= 0) return null;
+            if (n >= 1000) n /= 1000;
+            return n * 1000;
+        };
+        let normalizedD1 = (apiData.history_d1 || []).map(bar => ({
+            time: normalizeTime(bar.time), open: toChartPrice(bar.open),
+            high: toChartPrice(bar.high), low: toChartPrice(bar.low),
+            close: toChartPrice(bar.close), volume: Math.max(0, Number(bar.volume) || 0)
+        })).filter(bar => bar.time && bar.open && bar.high && bar.low && bar.close &&
+            bar.high >= Math.max(bar.open, bar.close, bar.low) &&
+            bar.low <= Math.min(bar.open, bar.close, bar.high))
+          .sort((a, b) => a.time.localeCompare(b.time));
 
         // Tự động gộp Tuần và Tháng từ Dữ liệu Ngày
         currentSymbolHistory = {
@@ -1106,8 +1109,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             }
         }
 
-        currentSymbolHistory.history_d1.sort((a, b) => a.time.localeCompare(b.time));
-        currentSymbolHistory.history_d1 = currentSymbolHistory.history_d1.filter((v, i, a) => a.findIndex(t => t.time === v.time) === i);
+        const uniqueBars = new Map();
+        currentSymbolHistory.history_d1.forEach(bar => uniqueBars.set(bar.time, bar));
+        currentSymbolHistory.history_d1 = Array.from(uniqueBars.values()).sort((a, b) => a.time.localeCompare(b.time));
         
         // Cập nhật lại W1/MN sau khi chèn nến realtime
         currentSymbolHistory.history_w1 = aggregateCandles(currentSymbolHistory.history_d1, 'W1');
@@ -1179,6 +1183,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
     function renderChartInstance(historyDataObj) {
         const container = document.getElementById('tv-chart-container');
+        if (chartInstance) { try { chartInstance.remove(); } catch (_) {} chartInstance = null; }
         container.innerHTML = '';
         const LC = window.LightweightCharts;
         if (!LC) return;
@@ -1554,8 +1559,10 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (icon) icon.className = "fa-solid fa-spinner spinner";
 
         try {
-            const url = `${PRICE_API_URL}/api/score-single?symbol=${encodeURIComponent(symbol)}&key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`;
-            const res = await fetch(url);
+            const adminKey = getAdminKeySession();
+            if (!adminKey) return;
+            const url = `${PRICE_API_URL}/api/score-single?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`;
+            const res = await fetch(url, { headers: { "X-Admin-Key": adminKey } });
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
@@ -1598,7 +1605,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         isRescoring = true;
         try {
-            const res = await fetch(`${PRICE_API_URL}/api/force-screener?key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`);
+            const adminKey = getAdminKeySession();
+            if (!adminKey) return;
+            const res = await fetch(`${PRICE_API_URL}/api/force-screener?t=${Date.now()}`, { headers: { "X-Admin-Key": adminKey } });
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
@@ -1641,7 +1650,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         icon.className = "fa-solid fa-spinner spinner";
         
         try {
-            const res = await fetch(`${PRICE_API_URL}/api/admin/force-ai-single?symbol=${currentSymbol}&key=${ADMIN_KEY}`);
+            const adminKey = getAdminKeySession();
+            if (!adminKey) return;
+            const res = await fetch(`${PRICE_API_URL}/api/admin/force-ai-single?symbol=${encodeURIComponent(currentSymbol)}`, { headers: { "X-Admin-Key": adminKey } });
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status} — server không phản hồi JSON` }; }
@@ -1694,24 +1705,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
     loadData(true);
 
-    // ══════════════════════════════════════════════════
-    // TẢI TRƯỚC TOÀN BỘ LỊCH SỬ ĐỒ THỊ (1 LẦN DUY NHẤT)
-    // ══════════════════════════════════════════════════
-    window.allHistoryCache = {};
-    setTimeout(async () => {
-        try {
-            console.log("🚀 Bắt đầu tải toàn bộ lịch sử đồ thị...");
-            const res = await fetch(`${PRICE_API_URL}/api/history-all`);
-            if (res.ok) {
-                const json = await res.json();
-                window.allHistoryCache = json.data || {};
-                console.log(`✅ Đã tải ${Object.keys(window.allHistoryCache).length} mã vào bộ nhớ đệm`);
-            } else {
-                console.warn("⚠️ Không tải được lịch sử toàn bộ, sẽ dùng API từng mã khi mở đồ thị.");
-            }
-        } catch (e) {
-            console.warn("Lỗi tải toàn bộ lịch sử:", e);
-        }
-    }, 3000); // Đợi 3 giây để loadData() xong, không làm nghẽn server
+    // Lịch sử được tải theo từng mã khi mở biểu đồ; không preload toàn thị trường.
 
     """
