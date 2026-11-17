@@ -7,37 +7,39 @@ def build_auth_lite_css():
     return r"""
     <style>
         /* 1. LỚP ĐEN (LAYER 1) - PHỦ KÍN 100% MÀN HÌNH */
-        #authOverlay { 
-            position: fixed !important; 
-            top: 0 !important; left: 0 !important;
-            width: 100vw !important; 
-            height: 100vh !important; 
-            height: 100dvh !important; 
-            z-index: 99999999 !important; 
-            background: #0f172a !important; 
-            display: flex !important; 
-            align-items: center !important; 
-            justify-content: center !important; 
-            padding: 1rem !important; 
+        #authOverlay {
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100% !important;
+            min-height: 100vh !important;
+            min-height: 100dvh !important;
+            z-index: 99999999 !important;
+            background: #0f172a !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left)) !important;
             box-sizing: border-box !important;
             opacity: 1;
             visibility: visible;
-            transition: opacity 0.25s ease, visibility 0.25s ease;
-            overflow: hidden !important;
+            pointer-events: auto;
+            transition: opacity 0.28s ease, visibility 0s linear 0s;
+            overflow-x: hidden !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
         }
-        #authOverlay.hidden { 
+        #authOverlay.hidden {
             opacity: 0 !important;
             visibility: hidden !important;
             pointer-events: none !important;
-            display: none !important; 
+            transition: opacity 0.28s ease, visibility 0s linear 0.28s;
         }
 
-        /* 2. KHÓA CỨNG BODY (LAYER 2) */
+        /* Khóa cuộn nền nhưng không cố định body (tránh giật vị trí trên iOS). */
         body.auth-locked {
             overflow: hidden !important;
-            height: 100vh !important;
-            touch-action: none !important; 
-            position: fixed !important;
+            overscroll-behavior: none;
             width: 100% !important;
         }
 
@@ -53,12 +55,17 @@ def build_auth_lite_css():
             text-align: center; 
             color: #f1f5f9; 
             box-sizing: border-box;
-            margin: auto !important; 
-            transform: scale(1);
-            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            margin: auto !important;
+            max-height: calc(100vh - 2rem);
+            max-height: calc(100dvh - 2rem);
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            transform: translateY(0) scale(1);
+            transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
         }
         
-        #authOverlay.hidden .auth-box { transform: scale(0.95); }
+        #authOverlay.hidden .auth-box { transform: translateY(8px) scale(0.985); }
         
         .auth-title { font-size: 1.35rem; font-weight: 800; margin-bottom: 0.5rem; color: #fff; letter-spacing: -0.025em; }
         .auth-sub { font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.75rem; line-height: 1.5; }
@@ -570,8 +577,6 @@ def build_auth_lite_js(config):
                     if (isExpired) {
                         if (authOverlay) {
                             authOverlay.classList.remove('hidden');
-                            authOverlay.style.display = 'flex';
-                            authOverlay.style.opacity = '1';
                         }
                         document.body.classList.add('auth-locked');
                         if (renewalModal) renewalModal.classList.add('show');
@@ -583,7 +588,6 @@ def build_auth_lite_js(config):
                         document.body.classList.remove('auth-locked'); 
                         if (authOverlay) {
                             authOverlay.classList.add('hidden');
-                            authOverlay.style.display = 'none'; 
                         }
                         if (adminModal) {
                             adminModal.classList.add('hidden');
@@ -600,8 +604,6 @@ def build_auth_lite_js(config):
                     document.body.classList.add('auth-locked');
                     if (authOverlay) {
                         authOverlay.classList.remove('hidden');
-                        authOverlay.style.display = 'flex'; 
-                        authOverlay.style.opacity = '1';
                     }
                     if (adminModal) {
                         adminModal.classList.add('hidden');
