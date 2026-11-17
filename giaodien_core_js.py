@@ -74,6 +74,112 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         }
     }
 
+    // Nạp trước lịch sử biểu đồ cho các nhóm người dùng quan tâm khi server rảnh.
+    let priorityPrefetchRunning = false;
+    let priorityPrefetchTimer = null;
+    let priorityPrefetchCursor = 0;
+    let priorityPrefetchQueue = [];
+
+    function buildPriorityPrefetchQueue() {
+        const buy = [];
+        const watched = [];
+        const moneyFlow = [];
+        const seen = new Set();
+
+        (screenerResults || []).forEach(item => {
+            const symbol = String(item.symbol || '').trim().toUpperCase();
+            if (!symbol) return;
+            if ((item.final_decision || '').includes('MUA')) buy.push(symbol);
+            if (userWatchlist && userWatchlist.has(symbol)) watched.push(symbol);
+            const pct = Number(item.price_change_percent || 0);
+            const vol = Number(item.volume_percent || 0);
+            if ((pct >= 3 || pct <= -3) && vol >= 120) moneyFlow.push(symbol);
+        });
+
+        return [...buy, ...watched, ...moneyFlow].filter(symbol => {
+            if (seen.has(symbol)) return false;
+            seen.add(symbol);
+            return true;
+        });
+    }
+
+    async function isServerAvailableForPriorityPrefetch() {
+        try {
+            const [statusRes, adminRes, historyRes] = await Promise.all([
+                fetch(`${PRICE_API_URL}/api/status`, { cache: 'no-store' }),
+                fetch(`${PRICE_API_URL}/api/admin/progress`, { cache: 'no-store' }).catch(() => null),
+                fetch(`${PRICE_API_URL}/api/history-crawl-status`, { cache: 'no-store' }).catch(() => null)
+            ]);
+            if (!statusRes.ok) return false;
+            const status = await statusRes.json();
+            if (status.is_crawling) return false;
+            if (status.history_job && status.history_job.status === 'running') return false;
+
+            if (adminRes && adminRes.ok) {
+                const admin = await adminRes.json();
+                if (admin.job && admin.job.status === 'running') return false;
+            }
+            if (historyRes && historyRes.ok) {
+                const history = await historyRes.json();
+                if (history.job && history.job.status === 'running') return false;
+            }
+            return true;
+        } catch (_) {
+            // Không xác định được trạng thái server thì không chạy nền để tránh tranh tài nguyên.
+            return false;
+        }
+    }
+
+    function schedulePriorityChartPrefetch(delay = 1200) {
+        if (priorityPrefetchTimer) clearTimeout(priorityPrefetchTimer);
+        priorityPrefetchTimer = setTimeout(runPriorityChartPrefetch, delay);
+    }
+
+    async function runPriorityChartPrefetch() {
+        priorityPrefetchTimer = null;
+        if (priorityPrefetchRunning) return;
+        priorityPrefetchQueue = buildPriorityPrefetchQueue();
+        priorityPrefetchCursor = 0;
+        if (!priorityPrefetchQueue.length) return;
+
+        if (!(await isServerAvailableForPriorityPrefetch())) {
+            // Nếu server đang cào/tác vụ nền, lùi lịch và kiểm tra lại.
+            schedulePriorityChartPrefetch(15000);
+            return;
+        }
+
+        priorityPrefetchRunning = true;
+        let processedSinceCheck = 0;
+        try {
+            while (priorityPrefetchCursor < priorityPrefetchQueue.length) {
+                if (processedSinceCheck >= 3) {
+                    processedSinceCheck = 0;
+                    if (!(await isServerAvailableForPriorityPrefetch())) {
+                        schedulePriorityChartPrefetch(15000);
+                        break;
+                    }
+                }
+
+                const symbol = priorityPrefetchQueue[priorityPrefetchCursor++];
+                if (readChartHistoryCache(symbol)) continue;
+
+                try {
+                    const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        writeChartHistoryCache(symbol, data);
+                    }
+                } catch (err) {
+                    console.debug('[CHART PREFETCH] Bỏ qua', symbol, err);
+                }
+                processedSinceCheck++;
+                await new Promise(resolve => setTimeout(resolve, 350));
+            }
+        } finally {
+            priorityPrefetchRunning = false;
+        }
+    }
+
 
     // ══════════════════════════════════════════════════
     // DICT STYLE
@@ -444,6 +550,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 };
             });
             renderCards();
+            // Ưu tiên cache biểu đồ cho danh mục MUA, theo dõi và mã có dòng tiền lớn.
+            // Chạy nền sau khi dữ liệu màn hình đã hiển thị, không chặn thao tác người dùng.
+            schedulePriorityChartPrefetch(1500);
         } catch (error) {
             console.error("Lỗi tải dữ liệu:", error);
             const container = document.getElementById('stock-container');
