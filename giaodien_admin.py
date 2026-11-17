@@ -21,6 +21,11 @@ def build_admin_tools_tab_html(price_api_url):
           <div class="flex justify-between"><span class="text-slate-400">Tác vụ lịch sử:</span><span id="admin-history-state" class="font-bold text-cyan-300">Chưa có</span></div>
           <div class="w-full bg-slate-800 rounded h-2 mt-2 overflow-hidden"><div id="admin-history-progress" class="bg-cyan-500 h-2" style="width:0%"></div></div>
           <div id="admin-history-detail" class="text-[10px] text-slate-400 mt-1">Chưa có tác vụ lịch sử.</div>
+          <div class="border-t border-slate-700 mt-3 pt-3">
+            <div class="flex justify-between text-[10px] mb-1"><b id="admin-task-title" class="text-amber-300">Tác vụ quản trị</b><b id="admin-task-percent" class="text-cyan-300">0%</b></div>
+            <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden"><div id="admin-task-progress" class="h-2.5 rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all duration-500" style="width:0%"></div></div>
+            <div id="admin-task-detail" class="text-[10px] text-slate-400 mt-1">Chưa có tác vụ đang chạy.</div>
+          </div>
         </div>
       </div>
 
@@ -65,6 +70,24 @@ def build_admin_tools_tab_html(price_api_url):
     (function() {{
       const ADMIN_API_URL = "{price_api_url}".replace(/\/$/, "");
       let statusTimer = null;
+      let requestBusy = false;
+      let activeTaskType = null;
+      const actionButtons = () => Array.from(document.querySelectorAll('#adminTabTools .admin-action-btn'));
+      function setButtonsBusy(busy, activeButton) {{
+        actionButtons().forEach(btn => {{
+          btn.disabled = !!busy;
+          btn.classList.toggle('opacity-50', !!busy && btn !== activeButton);
+          btn.classList.toggle('cursor-not-allowed', !!busy);
+        }});
+      }}
+      function buttonFeedback(btn, state) {{
+        if (!btn) return;
+        btn.classList.remove('admin-btn-loading','admin-btn-success','admin-btn-error');
+        if (state) btn.classList.add(state);
+      }}
+      const style = document.createElement('style');
+      style.textContent = '.admin-action-btn{{transition:transform .16s ease,filter .16s ease,box-shadow .16s ease,opacity .16s ease}}.admin-action-btn:active{{transform:scale(.97)}}.admin-action-btn.admin-btn-loading{{filter:brightness(1.25);box-shadow:0 0 0 2px rgba(34,211,238,.35);cursor:progress}}.admin-action-btn.admin-btn-loading:after{{content:"";display:inline-block;width:10px;height:10px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:middle;animation:adminSpin .7s linear infinite}}.admin-action-btn.admin-btn-success{{box-shadow:0 0 0 2px rgba(52,211,153,.65);filter:brightness(1.2)}}.admin-action-btn.admin-btn-error{{box-shadow:0 0 0 2px rgba(251,113,133,.65)}}@keyframes adminSpin{{to{{transform:rotate(360deg)}}}}';
+      document.head.appendChild(style);
 
       function log(msg, type) {{
         const el = document.getElementById('admin-tools-log');
@@ -86,9 +109,10 @@ def build_admin_tools_tab_html(price_api_url):
 
       window.checkAdminStatus = async function() {{
         try {{
-          const [server, history] = await Promise.all([
+          const [server, history, adminProgress] = await Promise.all([
             getJson(ADMIN_API_URL + '/api/status'),
-            getJson(ADMIN_API_URL + '/api/history-crawl-status')
+            getJson(ADMIN_API_URL + '/api/history-crawl-status'),
+            getJson(ADMIN_API_URL + '/api/admin/progress')
           ]);
           const serverEl = document.getElementById('admin-crawl-status');
           if (serverEl) serverEl.innerText = server.data.is_crawling ? 'REALTIME ĐANG CHẠY' : (server.data.is_paused ? 'TẠM DỪNG' : 'SẴN SÀNG');
@@ -101,15 +125,34 @@ def build_admin_tools_tab_html(price_api_url):
           if (detailEl) detailEl.innerText = (job.message || 'Chưa có tác vụ') + ' | ' + (job.completed || 0) + '/' + (job.total || 0) + ' mã | Thành công: ' + (job.success || 0) + ' | Lỗi: ' + (job.failed || 0) + ' | Chờ: ' + (job.queued || 0);
           if (bar) bar.style.width = pct + '%';
           if (job.status === 'running' && !statusTimer) statusTimer = setInterval(window.checkAdminStatus, 5000);
-          if (job.status !== 'running' && statusTimer) {{ clearInterval(statusTimer); statusTimer = null; }}
+          const adminJob = adminProgress.data.job || {{}};
+          const taskActive = adminJob.status === 'running';
+          setButtonsBusy(requestBusy || taskActive || job.status === 'running');
+          const taskPct = adminJob.total ? Math.min(100, Math.round((adminJob.completed || 0) * 100 / adminJob.total)) : 0;
+          const title = document.getElementById('admin-task-title');
+          const pctEl = document.getElementById('admin-task-percent');
+          const taskBar = document.getElementById('admin-task-progress');
+          const detail = document.getElementById('admin-task-detail');
+          if (title) title.innerText = adminJob.job_type || 'Tác vụ quản trị';
+          if (pctEl) pctEl.innerText = taskActive && !adminJob.total ? '...' : taskPct + '%';
+          if (taskBar) taskBar.style.width = (taskActive && !adminJob.total ? 8 : taskPct) + '%';
+          if (detail) detail.innerText = (adminJob.message || 'Chưa có tác vụ') + ' | ' + (adminJob.current_symbol ? 'Đang xử lý: ' + adminJob.current_symbol + ' | ' : '') + (adminJob.completed || 0) + '/' + (adminJob.total || 0) + ' mã | Thành công: ' + (adminJob.success || 0) + ' | Lỗi: ' + (adminJob.failed || 0);
+          if (taskActive) {{
+            if (!statusTimer) statusTimer = setInterval(window.checkAdminStatus, 4000);
+          }} else if (job.status !== 'running' && statusTimer) {{ clearInterval(statusTimer); statusTimer = null; }}
         }} catch (e) {{ log('Không lấy được trạng thái: ' + e.message, 'error'); }}
       }};
 
       window.callAdminApi = async function(endpoint, actionName, requireKey) {{
+        if (requestBusy) {{ log('Đang gửi yêu cầu khác, vui lòng đợi...', 'warning'); return; }}
+        const clickedButton = document.activeElement && document.activeElement.classList.contains('admin-action-btn') ? document.activeElement : null;
+        requestBusy = true;
+        setButtonsBusy(true, clickedButton);
+        buttonFeedback(clickedButton, 'admin-btn-loading');
         let url = ADMIN_API_URL + endpoint;
         if (requireKey) {{
           const key = prompt('Nhập ADMIN_API_KEY đã cấu hình trên server:');
-          if (!key) return;
+          if (!key) {{ requestBusy = false; setButtonsBusy(false); buttonFeedback(clickedButton, null); return; }}
           url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
         }}
         log('Đang gửi yêu cầu: ' + actionName + '...', 'warning');
@@ -117,10 +160,23 @@ def build_admin_tools_tab_html(price_api_url):
           const {{res, data}} = await getJson(url);
           if (data.status === 'success') {{
             log('Đã nhận yêu cầu ' + actionName + ': ' + (data.message || 'OK'), 'success');
+            buttonFeedback(clickedButton, 'admin-btn-success');
             if (data.job) log('Trạng thái hàng đợi: ' + JSON.stringify(data.job), 'info');
             window.checkAdminStatus();
-          }} else log(actionName + ' lỗi: ' + (data.message || ('HTTP ' + res.status)), 'error');
-        }} catch (e) {{ log('Lỗi kết nối: ' + e.message, 'error'); }}
+          }} else {{
+            log(actionName + ' lỗi: ' + (data.message || ('HTTP ' + res.status)), 'error');
+            buttonFeedback(clickedButton, 'admin-btn-error');
+          }}
+        }} catch (e) {{
+          log('Lỗi kết nối: ' + e.message, 'error');
+          buttonFeedback(clickedButton, 'admin-btn-error');
+        }} finally {{
+          setTimeout(() => {{
+            requestBusy = false;
+            setButtonsBusy(false);
+            if (clickedButton) setTimeout(() => buttonFeedback(clickedButton, null), 1800);
+          }}, 900);
+        }}
       }};
 
       window.runAdminFullAI = async function() {{
