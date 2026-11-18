@@ -12,7 +12,7 @@
         "annual_rate_percent": -17.79
     },
     "BAF": {
-        "annual_rate_percent": 21.89
+        "annual_rate_percent": 22.02
     },
     "BCM": {
         "annual_rate_percent": -7.16
@@ -42,7 +42,7 @@
         "annual_rate_percent": -12.93
     },
     "CMG": {
-        "annual_rate_percent": -6.4
+        "annual_rate_percent": -6.61
     },
     "CSM": {
         "annual_rate_percent": -7.62
@@ -54,7 +54,7 @@
         "annual_rate_percent": 9.21
     },
     "CTR": {
-        "annual_rate_percent": 4.89
+        "annual_rate_percent": 4.54
     },
     "CTS": {
         "annual_rate_percent": 5.47
@@ -93,7 +93,7 @@
         "annual_rate_percent": -2.39
     },
     "EVF": {
-        "annual_rate_percent": -4.12
+        "annual_rate_percent": -4.26
     },
     "FPT": {
         "annual_rate_percent": 4.86
@@ -108,7 +108,7 @@
         "annual_rate_percent": 3.64
     },
     "GEE": {
-        "annual_rate_percent": 38.69
+        "annual_rate_percent": 38.24
     },
     "GEX": {
         "annual_rate_percent": -2.3
@@ -294,7 +294,7 @@
         "annual_rate_percent": -3.08
     },
     "TCX": {
-        "annual_rate_percent": -11.44
+        "annual_rate_percent": -11.47
     },
     "TID": {
         "annual_rate_percent": -17.91
@@ -342,7 +342,7 @@
         "annual_rate_percent": 6.72
     },
     "VND": {
-        "annual_rate_percent": -11.52
+        "annual_rate_percent": -11.7
     },
     "VNM": {
         "annual_rate_percent": -2.7
@@ -363,13 +363,13 @@
         "annual_rate_percent": -4.64
     },
     "VPX": {
-        "annual_rate_percent": -23.86
+        "annual_rate_percent": -23.9
     },
     "VRE": {
         "annual_rate_percent": -4.23
     },
     "VSC": {
-        "annual_rate_percent": -5.07
+        "annual_rate_percent": -5.1
     },
     "VTO": {
         "annual_rate_percent": 5.28
