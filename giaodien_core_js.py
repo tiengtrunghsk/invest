@@ -1548,9 +1548,35 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         return latestPrices;
     }
 
+    // Tự ẩn bảng tiến trình khi không có log/tiến độ mới; hiện lại khi có cập nhật.
+    let priceProgressIdleTimer = null;
+    function touchPriceProgress() {
+        showLogConsole();
+        if (priceProgressIdleTimer) clearTimeout(priceProgressIdleTimer);
+        priceProgressIdleTimer = setTimeout(() => {
+            hideLogConsole();
+            priceProgressIdleTimer = null;
+        }, 5000);
+    }
+    function logPriceProgress(...args) {
+        touchPriceProgress();
+        addLog(...args);
+    }
+    function setPriceProgress(...args) {
+        touchPriceProgress();
+        updateProgress(...args);
+    }
+    function finishPriceProgress(delay = 1500) {
+        if (priceProgressIdleTimer) clearTimeout(priceProgressIdleTimer);
+        priceProgressIdleTimer = setTimeout(() => {
+            hideLogConsole();
+            priceProgressIdleTimer = null;
+        }, delay);
+    }
+
     let isRefreshingAll = false;
     async function refreshPrices() {
-        if (isRefreshingAll || isRefreshingSingle) { addLog(`Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!`, 'warning'); return; }
+        if (isRefreshingAll || isRefreshingSingle) { logPriceProgress(`Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!`, 'warning'); return; }
         isRefreshingAll = true;
         const icon = document.getElementById('refresh-icon');
         const headerBtn = icon ? icon.closest('button') : null;
@@ -1559,18 +1585,18 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = true; btn.classList.add('opacity-50', 'cursor-not-allowed'); });
         showLogConsole();
         document.getElementById('log-content').innerHTML = '';
-        updateProgress(0, 1);
+        setPriceProgress(0, 1);
         const symbols = screenerResults.map(item => item.symbol);
         if (symbols.length === 0) {
-            addLog(`Danh sách trống, không có gì để cập nhật.`, 'warning');
+            logPriceProgress(`Danh sách trống, không có gì để cập nhật.`, 'warning');
             isRefreshingAll = false;
             if (icon) icon.classList.remove('spinner');
             if (headerBtn) headerBtn.disabled = false;
             document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = false; btn.classList.remove('opacity-50', 'cursor-not-allowed'); });
             return;
         }
-        addLog(`Bắt đầu lấy giá cho ${symbols.length} mã...`, 'processing');
-        updateProgress(0, symbols.length);
+        logPriceProgress(`Bắt đầu lấy giá cho ${symbols.length} mã...`, 'processing');
+        setPriceProgress(0, symbols.length);
         try {
             const chunkSize = Math.max(1, symbols.length);
             const chunks = [];
@@ -1596,7 +1622,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                         const crawlInProgress = data.crawl_in_progress === true ||
                             String(data.updated_at || '').includes('Bắt đầu cào');
                         if (crawlInProgress) {
-                            addLog('Máy chủ đang cào realtime; chờ dữ liệu mới được ghi vào DB...', 'processing');
+                            logPriceProgress('Máy chủ đang cào realtime; chờ dữ liệu mới được ghi vào DB...', 'processing');
                             mongoPrices = await waitForRealtimePrices(chunk, baselinePrices, 45);
                         }
 
@@ -1622,46 +1648,46 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                                     item.is_locked = newData.is_locked === true;
                                     item.price_source = 'realtime';
                                 }
-                                addLog(`${sym}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
+                                logPriceProgress(`${sym}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
                                 updatedCount++;
-                            } else { addLog(`${sym}: Không lấy được giá`, 'error'); }
+                            } else { logPriceProgress(`${sym}: Không lấy được giá`, 'error'); }
                             processedCount++;
-                            updateProgress(processedCount, symbols.length);
+                            setPriceProgress(processedCount, symbols.length);
                         });
                     } else {
                         chunk.forEach(sym => {
-                            addLog(`${sym}: Lỗi server API (${res.status})`, 'error');
+                            logPriceProgress(`${sym}: Lỗi server API (${res.status})`, 'error');
                             processedCount++;
-                            updateProgress(processedCount, symbols.length);
+                            setPriceProgress(processedCount, symbols.length);
                         });
                     }
                 } catch (err) {
                     const isTimeout = err.name === 'AbortError';
                     chunk.forEach(sym => {
-                        addLog(`${sym}: ${isTimeout ? 'Server quá tải/Không phản hồi' : 'Lỗi kết nối mạng'}`, 'error');
+                        logPriceProgress(`${sym}: ${isTimeout ? 'Server quá tải/Không phản hồi' : 'Lỗi kết nối mạng'}`, 'error');
                         processedCount++;
-                        updateProgress(processedCount, symbols.length);
+                        setPriceProgress(processedCount, symbols.length);
                     });
                 }
             }));
             renderCards();
-            addLog(`Hoàn tất toàn bộ! Đã cập nhật ${updatedCount}/${symbols.length} mã.`, 'success');
-            updateProgress(symbols.length, symbols.length);
+            logPriceProgress(`Hoàn tất toàn bộ! Đã cập nhật ${updatedCount}/${symbols.length} mã.`, 'success');
+            setPriceProgress(symbols.length, symbols.length);
         } catch (err) {
             console.error(err);
-            addLog(`Lỗi nghiêm trọng khi gọi API.`, 'error');
+            logPriceProgress(`Lỗi nghiêm trọng khi gọi API.`, 'error');
         } finally {
             isRefreshingAll = false;
             if (icon) icon.classList.remove('spinner');
             if (headerBtn) headerBtn.disabled = false;
             document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = false; btn.classList.remove('opacity-50', 'cursor-not-allowed'); });
-            setTimeout(() => { if (!isLogMinimized) hideLogConsole(); }, 3000);
+            finishPriceProgress(1500);
         }
     }
 
     let isRefreshingSingle = false;
     async function refreshSinglePrice(symbol, btnElement) {
-        if (isRefreshingAll || isRefreshingSingle) { addLog(`Hệ thống đang bận, đợi xíu nhé!`, 'warning'); return; }
+        if (isRefreshingAll || isRefreshingSingle) { logPriceProgress(`Hệ thống đang bận, đợi xíu nhé!`, 'warning'); return; }
         if (btnElement.disabled) return;
         isRefreshingSingle = true;
         btnElement.disabled = true;
@@ -1671,8 +1697,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (headerBtn) { headerBtn.disabled = true; headerBtn.classList.add('opacity-50', 'cursor-not-allowed'); }
         showLogConsole();
         document.getElementById('log-content').innerHTML = '';
-        updateProgress(0, 1);
-        addLog(`Bắt đầu lấy giá cho ${symbol}...`, 'processing');
+        setPriceProgress(0, 1);
+        logPriceProgress(`Bắt đầu lấy giá cho ${symbol}...`, 'processing');
         try {
             const baselinePrices = await readMongoPriceSnapshot();
             const controller = new AbortController();
@@ -1686,7 +1712,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const crawlInProgress = data.crawl_in_progress === true ||
                     String(data.updated_at || '').includes('Bắt đầu cào');
                 if (crawlInProgress) {
-                    addLog('Máy chủ đang cào; chờ giá realtime mới được ghi vào DB...', 'processing');
+                    logPriceProgress('Máy chủ đang cào; chờ giá realtime mới được ghi vào DB...', 'processing');
                     mongoPrices = await waitForRealtimePrices([symbol], baselinePrices, 45);
                 }
                 const fromMongo = mongoPrices[symbol];
@@ -1726,22 +1752,22 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                             pctEl.innerText = `${newData.price_arrow} ${newData.price_change_percent}%`;
                         }
                     }
-                    addLog(`${symbol}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
+                    logPriceProgress(`${symbol}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
                 } else {
-                    addLog(`${symbol}: Chưa nhận được giá realtime mới; giữ nguyên dữ liệu hiện tại`, 'warning');
+                    logPriceProgress(`${symbol}: Chưa nhận được giá realtime mới; giữ nguyên dữ liệu hiện tại`, 'warning');
                 }
-            } else { addLog(`${symbol}: Lỗi server (${res.status})`, 'error'); }
+            } else { logPriceProgress(`${symbol}: Lỗi server (${res.status})`, 'error'); }
         } catch (err) { 
             const isTimeout = err.name === 'AbortError';
-            addLog(`${symbol}: ${isTimeout ? 'Server quá tải' : 'Lỗi kết nối mạng'}`, 'error'); 
+            logPriceProgress(`${symbol}: ${isTimeout ? 'Server quá tải' : 'Lỗi kết nối mạng'}`, 'error'); 
         }
         finally {
-            updateProgress(1, 1);
+            setPriceProgress(1, 1);
             isRefreshingSingle = false;
             btnElement.disabled = false;
             if (icon) icon.classList.remove('spinner');
             if (headerBtn) { headerBtn.disabled = false; headerBtn.classList.remove('opacity-50', 'cursor-not-allowed'); }
-            setTimeout(() => { if (!isLogMinimized) hideLogConsole(); }, 2000);
+            finishPriceProgress(1500);
         }
     }
 
