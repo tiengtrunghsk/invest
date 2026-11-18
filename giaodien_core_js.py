@@ -510,7 +510,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     total_shares: extraData.total_shares !== undefined ? extraData.total_shares : (item.total_shares || 0),
                     
                     // === ƯU TIÊN LẤY TỪ MONGODB (mongoSI -> liveData) TRƯỚC KHI LẤY TỪ FILE TĨNH (extraData) ===
-                    eps: mongoSI.eps !== undefined ? mongoSI.eps : (liveData.eps !== undefined ? liveData.eps : (extraData.eps !== undefined ? extraData.eps : (item.eps || 0))),
+                    eps: liveData.eps !== undefined ? liveData.eps : (mongoSI.eps !== undefined ? mongoSI.eps : (extraData.eps !== undefined ? extraData.eps : (item.eps || 0))),
                     dividend_yield: mongoSI.dividend_yield !== undefined ? mongoSI.dividend_yield : (liveData.dividend_yield !== undefined ? liveData.dividend_yield : (extraData.dividend_yield !== undefined ? extraData.dividend_yield : (item.dividend_yield || 0))),
                     pe: mongoSI.pe !== undefined ? mongoSI.pe : (liveData.pe !== undefined ? liveData.pe : (extraData.pe !== undefined ? extraData.pe : (item.pe || 0))),
                     pb: mongoSI.pb !== undefined ? mongoSI.pb : (liveData.pb !== undefined ? liveData.pb : (extraData.pb !== undefined ? extraData.pb : (item.pb || 0))),
@@ -628,8 +628,12 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         document.getElementById('modal-pe').innerText = item.pe > 0 ? item.pe.toFixed(1) : '—';
         document.getElementById('modal-pb').innerText = item.pb > 0 ? item.pb.toFixed(1) : '—';
-        // EPS nội bộ lưu theo nghìn đồng/cổ phiếu; modal hiển thị đồng/cổ phiếu.
-        document.getElementById('modal-eps').innerText = item.eps > 0 ? formatNumber(item.eps * 1000) + ' đ' : '—';
+        // Ưu tiên EPS từ stocks (MongoDB), lưu theo nghìn đồng/cổ phiếu.
+        // Modal đổi sang đồng/cổ phiếu và không dùng formatNumber() vì hàm đó làm tròn.
+        const epsVnd = Number(item.eps) * 1000;
+        document.getElementById('modal-eps').innerText = Number.isFinite(epsVnd) && epsVnd > 0
+            ? epsVnd.toLocaleString('vi-VN', { maximumFractionDigits: 10 }) + ' đ'
+            : '—';
         document.getElementById('modal-roe').innerText = item.roe ? formatPercent(item.roe) : '—';
         document.getElementById('modal-roa').innerText = item.roa ? formatPercent(item.roa) : '—';
         document.getElementById('modal-div').innerText = item.dividend_yield ? item.dividend_yield + '%' : '—';
