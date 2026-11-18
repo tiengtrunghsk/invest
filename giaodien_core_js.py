@@ -489,7 +489,13 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const mongoSI = mongoScreenerMap[sym] || {}; 
                 const historySnapshot = getHistoryPriceSnapshot(sym);
                 const liveClose = Number(liveData.close_price !== undefined ? liveData.close_price : liveData.close);
-                const hasRealtime = Number.isFinite(liveClose) && liveClose > 0 && liveData.is_locked === false && !!liveData.updated_at && !!liveData.trading_date;
+                const todayVN = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(new Date());
+                // is_locked chỉ là cờ trạng thái khóa sổ; giá realtime vẫn hợp lệ
+                // khi giá được cào trong ngày, kể cả giá không đổi so với tham chiếu.
+                const hasRealtime = Number.isFinite(liveClose) && liveClose > 0 &&
+                    !!liveData.updated_at && String(liveData.trading_date || '') === todayVN;
                 const priceData = hasRealtime ? liveData : (historySnapshot || {});
                 
                 let finalClosePrice = item.close_price || 0;
@@ -1509,6 +1515,39 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     // ══════════════════════════════════════════════════
     // REFRESH GIÁ (CÓ TIMEOUT)
     // ══════════════════════════════════════════════════
+
+    // Đọc snapshot giá từ MongoDB và chờ crawl nền ghi xong trước khi cập nhật card.
+    async function readMongoPriceSnapshot() {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const res = await fetch(`${PRICE_API_URL}/api/data?t=` + Date.now(), { signal: controller.signal, cache: 'no-store' });
+            clearTimeout(timeoutId);
+            if (!res.ok) return {};
+            const json = await res.json();
+            return json.data || {};
+        } catch (err) {
+            return {};
+        }
+    }
+
+    async function waitForRealtimePrices(symbols, baselinePrices, maxAttempts = 45) {
+        let latestPrices = {};
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            latestPrices = await readMongoPriceSnapshot();
+            const pending = symbols.filter(sym => {
+                const current = latestPrices[sym];
+                const previous = baselinePrices[sym];
+                const close = Number(current && (current.close_price !== undefined ? current.close_price : current.close));
+                return !current || !(close > 0) || !current.updated_at ||
+                    (previous && current.updated_at === previous.updated_at);
+            });
+            if (pending.length === 0) return latestPrices;
+            await new Promise(resolve => setTimeout(resolve, 1200));
+        }
+        return latestPrices;
+    }
+
     let isRefreshingAll = false;
     async function refreshPrices() {
         if (isRefreshingAll || isRefreshingSingle) { addLog(`Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!`, 'warning'); return; }
@@ -1533,7 +1572,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         addLog(`Bắt đầu lấy giá cho ${symbols.length} mã...`, 'processing');
         updateProgress(0, symbols.length);
         try {
-            const chunkSize = 20;
+            const chunkSize = Math.max(1, symbols.length);
             const chunks = [];
             for (let i = 0; i < symbols.length; i += chunkSize) { chunks.push(symbols.slice(i, i + chunkSize)); }
             let updatedCount = 0;
@@ -1542,8 +1581,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             await Promise.all(chunks.map(async (chunk) => {
                 const symQuery = chunk.join(',');
                 try {
+                    const baselinePrices = await readMongoPriceSnapshot();
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 5000);
+                    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
                     const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symQuery}`, { signal: controller.signal });
                     clearTimeout(timeoutId);
@@ -1552,38 +1592,35 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                         const data = await res.json();
                         lastUpdateTime = data.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
                         
-                        const dataController = new AbortController();
-                        const dataTimeoutId = setTimeout(() => dataController.abort(), 5000);
-                        
-                        const dataRes = await fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: dataController.signal });
-                        clearTimeout(dataTimeoutId);
-
-                        let mongoPrices = {};
-                        if (dataRes.ok) {
-                            const mongoJson = await dataRes.json();
-                            mongoPrices = mongoJson.data || {};
+                        let mongoPrices = await readMongoPriceSnapshot();
+                        const crawlStarted = String(data.updated_at || '').includes('Bắt đầu cào');
+                        if (crawlStarted) {
+                            addLog('Đang cào realtime trên máy chủ; chờ giá mới được ghi vào DB...', 'processing');
+                            mongoPrices = await waitForRealtimePrices(chunk, baselinePrices, 45);
                         }
 
                         chunk.forEach(sym => {
-                            if (data.updated_data && data.updated_data[sym] !== undefined) {
-                                const newData = data.updated_data[sym];
+                            const fromSync = data.updated_data && data.updated_data[sym];
+                            const fromMongo = mongoPrices[sym];
+                            const newData = fromSync || fromMongo;
+                            const changedAfterRequest = !crawlStarted ||
+                                (fromMongo && fromMongo.updated_at && (!baselinePrices[sym] || fromMongo.updated_at !== baselinePrices[sym].updated_at));
+                            if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
                                 const item = screenerResults.find(s => s.symbol === sym);
                                 
                                 if (item) { 
-                                    item.close_price = newData.close_price || newData.close; 
+                                    item.close_price = newData.close_price !== undefined ? newData.close_price : newData.close;
                                     item.prev_close = newData.prev_close;
                                     item.price_change_percent = newData.price_change_percent;
                                     item.price_change_available = newData.price_change_available;
                                     item.price_arrow = newData.price_arrow;
                                     item.price_color = newData.price_color;
-                                    
-                                    if (!item.is_locked && newData.updated_at) {
-                                        item.updated_at = newData.updated_at;
-                                    } else if (!item.is_locked) {
-                                        item.updated_at = lastUpdateTime;
-                                    }
+                                    item.updated_at = newData.updated_at || lastUpdateTime;
+                                    item.trading_date = newData.trading_date || item.trading_date;
+                                    item.is_locked = newData.is_locked === true;
+                                    item.price_source = 'realtime';
                                 }
-                                addLog(`${sym}: ${formatPrice(newData.close_price)} đ`, 'success');
+                                addLog(`${sym}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
                                 updatedCount++;
                             } else { addLog(`${sym}: Không lấy được giá`, 'error'); }
                             processedCount++;
@@ -1635,61 +1672,59 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         updateProgress(0, 1);
         addLog(`Bắt đầu lấy giá cho ${symbol}...`, 'processing');
         try {
+            const baselinePrices = await readMongoPriceSnapshot();
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
             const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symbol}`, { signal: controller.signal });
             clearTimeout(timeoutId);
 
             if (res.ok) {
                 const data = await res.json();
-                if (data.updated_data && data.updated_data[symbol] !== undefined) {
-                    const newData = data.updated_data[symbol];
-                    
-                    const dataController = new AbortController();
-                    const dataTimeoutId = setTimeout(() => dataController.abort(), 5000);
-                    const dataRes = await fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: dataController.signal });
-                    clearTimeout(dataTimeoutId);
-
-                    let mongoPrices = {};
-                    if (dataRes.ok) {
-                        const mongoJson = await dataRes.json();
-                        mongoPrices = mongoJson.data || {};
-                    }
+                let mongoPrices = await readMongoPriceSnapshot();
+                const crawlStarted = String(data.updated_at || '').includes('Bắt đầu cào');
+                if (crawlStarted) {
+                    addLog('Đang chờ máy chủ cào xong giá realtime...', 'processing');
+                    mongoPrices = await waitForRealtimePrices([symbol], baselinePrices, 45);
+                }
+                const newData = (data.updated_data && data.updated_data[symbol]) || mongoPrices[symbol];
+                const changedAfterRequest = !crawlStarted ||
+                    (newData && newData.updated_at && (!baselinePrices[symbol] || newData.updated_at !== baselinePrices[symbol].updated_at));
+                if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
 
                     const item = screenerResults.find(s => s.symbol === symbol);
                     if (item) { 
-                        item.close_price = newData.close_price || newData.close; 
+                        item.close_price = newData.close_price !== undefined ? newData.close_price : newData.close;
                         item.prev_close = newData.prev_close;
                         item.price_change_percent = newData.price_change_percent;
                         item.price_change_available = newData.price_change_available;
                         item.price_arrow = newData.price_arrow;
                         item.price_color = newData.price_color;
-
-                        if (!item.is_locked && newData.updated_at) {
-                            item.updated_at = newData.updated_at;
-                        }
+                        item.updated_at = newData.updated_at || item.updated_at;
+                        item.trading_date = newData.trading_date || item.trading_date;
+                        item.is_locked = newData.is_locked === true;
+                        item.price_source = 'realtime';
                     }
 
                     const card = btnElement.closest('.bg-slate-900');
                     if (card) {
                         const priceEl = card.querySelector('.text-emerald-400.leading-tight');
                         if (priceEl) {
-                            priceEl.innerText = formatPrice(newData.close_price);
+                            priceEl.innerText = formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close);
                             priceEl.classList.add('text-white', 'bg-emerald-500');
                             setTimeout(() => priceEl.classList.remove('text-white', 'bg-emerald-500'), 500);
                         }
                         const timeEl = card.querySelector('.fa-clock').parentElement;
                         if (timeEl) {
-                            timeEl.innerHTML = `<i class="fa-regular fa-clock mr-0.5"></i>${newData.updated_at || lastUpdateTime}`;
+                            timeEl.innerHTML = `<i class="fa-regular fa-clock mr-0.5"></i>${newData.updated_at || 'Vừa cập nhật'}`;
                         }
                         const pctEl = card.querySelector('.price-change-percent');
                         if (pctEl) {
                             pctEl.innerText = `${newData.price_arrow} ${newData.price_change_percent}%`;
                         }
                     }
-                    addLog(`${symbol}: ${formatPrice(newData.close_price)} đ`, 'success');
+                    addLog(`${symbol}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
                 } else {
-                    addLog(`${symbol}: Không lấy được giá`, 'error');
+                    addLog(`${symbol}: Chưa nhận được giá realtime mới; giữ nguyên dữ liệu hiện tại`, 'warning');
                 }
             } else { addLog(`${symbol}: Lỗi server (${res.status})`, 'error'); }
         } catch (err) { 
