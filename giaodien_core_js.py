@@ -37,41 +37,20 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     let chartAutoUpdateInterval = null; // Biến lưu bộ đếm tự động refresh đồ thị
     let chartRequestSequence = 0;
 
-    // Cache lịch sử biểu đồ theo từng mã; cache trình duyệt theo phiên để mở lại tức thì.
-    const CHART_HISTORY_CACHE_TTL = 60 * 1000;
-    const CHART_HISTORY_CACHE_PREFIX = 'invest_chart_history_v1_';
+    // Cache lịch sử biểu đồ chỉ tồn tại trong RAM của trang hiện tại.
+    // Không đặt TTL và không ghi sessionStorage: refresh trang sẽ tự xóa toàn bộ cache.
     const chartHistoryMemoryCache = new Map();
 
     function readChartHistoryCache(symbol, allowStale = false) {
-        const key = CHART_HISTORY_CACHE_PREFIX + String(symbol || '').toUpperCase();
-        const memory = chartHistoryMemoryCache.get(key);
-        if (memory && (allowStale || Date.now() - memory.cachedAt < CHART_HISTORY_CACHE_TTL)) return memory.data;
-        try {
-            const raw = sessionStorage.getItem(key);
-            if (!raw) return null;
-            const saved = JSON.parse(raw);
-            if (!saved || !saved.cachedAt || !saved.data) {
-                sessionStorage.removeItem(key);
-                return null;
-            }
-            if (!allowStale && Date.now() - saved.cachedAt >= CHART_HISTORY_CACHE_TTL) return null;
-            chartHistoryMemoryCache.set(key, saved);
-            return saved.data;
-        } catch (_) {
-            return null;
-        }
+        const key = String(symbol || '').toUpperCase();
+        const cached = chartHistoryMemoryCache.get(key);
+        return cached ? cached.data : null;
     }
 
     function writeChartHistoryCache(symbol, data) {
         if (!data || data.status !== 'success' || !Array.isArray(data.history_d1)) return;
-        const key = CHART_HISTORY_CACHE_PREFIX + String(symbol || '').toUpperCase();
-        const entry = { cachedAt: Date.now(), data: data };
-        chartHistoryMemoryCache.set(key, entry);
-        try {
-            sessionStorage.setItem(key, JSON.stringify(entry));
-        } catch (_) {
-            // Nếu bộ nhớ trình duyệt đầy, vẫn giữ cache RAM trong phiên hiện tại.
-        }
+        const key = String(symbol || '').toUpperCase();
+        chartHistoryMemoryCache.set(key, { cachedAt: Date.now(), data: data });
     }
 
     // Nạp trước lịch sử biểu đồ cho các nhóm người dùng quan tâm khi server rảnh.
@@ -414,6 +393,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             // 2. Tải dữ liệu CHẤM ĐIỂM MỚI NHẤT từ API MongoDB (CÓ RETRY KHI 503)
             let mongoScreener = [];
             let mongoPrices = {};
+            let mongoHistory = {};
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000); // Đợi tối đa 5s
@@ -461,8 +441,41 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     const mJson = await mongoDataRes.json();
                     mongoPrices = mJson.data || {};
                 }
+                // Lấy history hàng loạt để card có dữ liệu chuẩn khi không có realtime.
+                try {
+                    const historyRes = await fetch(`${PRICE_API_URL}/api/history-all?t=` + new Date().getTime(), { signal: controller.signal });
+                    if (historyRes.ok) {
+                        const historyJson = await historyRes.json();
+                        mongoHistory = historyJson.data || {};
+                    }
+                } catch (historyErr) { console.warn('[HISTORY/CARDS] Không tải được history:', historyErr); }
             } catch (e) { 
                 console.warn("⚠️ Không lấy được dữ liệu từ MongoDB. Dùng dữ liệu tĩnh (Github).", e); 
+            }
+
+            // Chọn dữ liệu giá theo nguồn: realtime khi phiên đang mở; còn lại dùng 2 nến D1 mới nhất.
+            function getHistoryPriceSnapshot(symbol) {
+                const bars = (mongoHistory[symbol] && mongoHistory[symbol].history_d1) || [];
+                const validBars = bars.filter(b => b && b.time && Number(b.close) > 0)
+                    .slice().sort((a, b) => String(a.time).localeCompare(String(b.time)));
+                if (!validBars.length) return null;
+                const latest = validBars[validBars.length - 1];
+                const previous = validBars.length >= 2 ? validBars[validBars.length - 2] : null;
+                const close = Number(latest.close);
+                const prevClose = previous ? Number(previous.close) : 0;
+                const available = prevClose > 0 && Number.isFinite(prevClose);
+                const pct = available ? Math.round(((close - prevClose) / prevClose) * 10000) / 100 : 0;
+                return {
+                    close_price: close,
+                    prev_close: available ? prevClose : null,
+                    price_change_percent: pct,
+                    price_change_available: available,
+                    price_arrow: !available || pct === 0 ? '—' : (pct > 0 ? '▲' : '▼'),
+                    price_color: !available || pct === 0 ? 'slate' : (pct > 0 ? 'emerald' : 'rose'),
+                    updated_at: latest.time,
+                    trading_date: latest.time,
+                    price_source: 'history'
+                };
             }
 
             // 3. Hợp nhất dữ liệu: Ưu tiên MongoDB, sau đó đến JSON tĩnh
@@ -474,11 +487,15 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const extraData = rawStockData[sym] || {};
                 const liveData = mongoPrices[sym] || {}; 
                 const mongoSI = mongoScreenerMap[sym] || {}; 
+                const historySnapshot = getHistoryPriceSnapshot(sym);
+                const liveClose = Number(liveData.close_price !== undefined ? liveData.close_price : liveData.close);
+                const hasRealtime = Number.isFinite(liveClose) && liveClose > 0 && liveData.is_locked === false && !!liveData.updated_at && !!liveData.trading_date;
+                const priceData = hasRealtime ? liveData : (historySnapshot || {});
                 
                 let finalClosePrice = item.close_price || 0;
-                if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
-                else if (liveData.close !== undefined) finalClosePrice = liveData.close;
-                else if (extraData.close !== undefined) finalClosePrice = extraData.close;
+                if (priceData.close_price !== undefined) finalClosePrice = priceData.close_price;
+                else if (priceData.close !== undefined) finalClosePrice = priceData.close;
+                else if (!historySnapshot && extraData.close !== undefined) finalClosePrice = extraData.close;
 
                 return {
                     ...item,
@@ -500,17 +517,19 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     // ================================================================================================
 
                     close_price: finalClosePrice,
-                    updated_at: liveData.updated_at || extraData.updated_at || item.updated_at || "Chưa rõ", 
-                    open: liveData.open !== undefined ? liveData.open : null,
-                    high: liveData.high !== undefined ? liveData.high : null,
-                    low: liveData.low !== undefined ? liveData.low : null,
-                    volume: liveData.volume !== undefined ? liveData.volume : null,
-                    trading_date: liveData.trading_date || null,
-                    is_locked: liveData.is_locked || false,
-                    price_change_percent: liveData.price_change_percent !== undefined && liveData.price_change_available ? liveData.price_change_percent : (item.price_change_percent || 0),
-                    price_change_available: liveData.price_change_available !== undefined ? liveData.price_change_available : (item.price_change_available || false),
-                    price_arrow: liveData.price_arrow && liveData.price_change_available ? liveData.price_arrow : (item.price_arrow || "—"),
-                    price_color: liveData.price_color && liveData.price_change_available ? liveData.price_color : (item.price_color || "slate"),
+                    prev_close: priceData.prev_close !== undefined ? priceData.prev_close : null,
+                    updated_at: priceData.updated_at || (historySnapshot ? historySnapshot.updated_at : "Chưa rõ"),
+                    open: priceData.open !== undefined ? priceData.open : null,
+                    high: priceData.high !== undefined ? priceData.high : null,
+                    low: priceData.low !== undefined ? priceData.low : null,
+                    volume: priceData.volume !== undefined ? priceData.volume : null,
+                    trading_date: priceData.trading_date || null,
+                    is_locked: priceData.is_locked === true,
+                    price_source: hasRealtime ? 'realtime' : (historySnapshot ? 'history' : 'unavailable'),
+                    price_change_percent: priceData.price_change_percent !== undefined ? priceData.price_change_percent : 0,
+                    price_change_available: priceData.price_change_available === true,
+                    price_arrow: priceData.price_arrow || '—',
+                    price_color: priceData.price_color || 'slate',
                     volume_percent: liveData.volume_percent !== undefined ? liveData.volume_percent : (item.volume_percent || 0),
                     amplitude_percent: liveData.amplitude_percent !== undefined ? liveData.amplitude_percent : (item.amplitude_percent || 0),
                     
