@@ -1921,6 +1921,69 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
     loadData(true);
 
+    // Đồng bộ riêng giá realtime từ MongoDB định kỳ, không tải lại screener/BCTC.
+    // Tránh tình trạng stocks đã đổi giá nhưng card vẫn giữ snapshot lúc mở trang.
+    let isLivePricePolling = false;
+    async function refreshLivePricesFromMongo() {
+        if (isLivePricePolling || document.visibilityState === 'hidden' ||
+            !Array.isArray(screenerResults) || screenerResults.length === 0) return;
+        isLivePricePolling = true;
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            let res;
+            try {
+                res = await fetch(`${PRICE_API_URL}/api/data?t=${Date.now()}`, {
+                    signal: controller.signal,
+                    cache: 'no-store'
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+            if (!res || !res.ok) return;
+            const payload = await res.json();
+            const prices = payload && payload.data ? payload.data : {};
+            let changed = false;
+            for (const item of screenerResults) {
+                const live = prices[item.symbol];
+                if (!live) continue;
+                const close = Number(live.close_price !== undefined ? live.close_price : live.close);
+                if (!(close > 0) || !Number.isFinite(close)) continue;
+                const updatedAt = live.updated_at || item.updated_at || '';
+                const prevClose = Number(live.prev_close || 0);
+                const pct = Number(live.price_change_percent || 0);
+                if (Number(item.close_price) !== close ||
+                    String(item.updated_at || '') !== String(updatedAt) ||
+                    Number(item.price_change_percent || 0) !== pct) changed = true;
+                item.close_price = close;
+                item.close = close;
+                item.prev_close = prevClose > 0 ? prevClose : null;
+                item.updated_at = updatedAt;
+                item.open = live.open !== undefined ? live.open : item.open;
+                item.high = live.high !== undefined ? live.high : item.high;
+                item.low = live.low !== undefined ? live.low : item.low;
+                item.volume = live.volume !== undefined ? live.volume : item.volume;
+                item.trading_date = live.trading_date || item.trading_date || null;
+                item.price_change_percent = pct;
+                item.price_change_available = live.price_change_available === true;
+                item.price_arrow = live.price_arrow || '—';
+                item.price_color = live.price_color || 'slate';
+                item.price_source = 'realtime';
+            }
+            if (changed) renderCards();
+        } catch (error) {
+            console.warn('[LIVE-PRICE] Không đồng bộ được snapshot MongoDB:', error);
+        } finally {
+            isLivePricePolling = false;
+        }
+    }
+
+    // Poll nhẹ mỗi 15 giây; chỉ đọc stocks, không kích hoạt cào SSI hay chấm điểm.
+    setInterval(refreshLivePricesFromMongo, 15000);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') refreshLivePricesFromMongo();
+    });
+
     // Lịch sử được tải theo từng mã khi mở biểu đồ; không preload toàn thị trường.
 
     """
