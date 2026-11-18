@@ -1593,17 +1593,19 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                         lastUpdateTime = data.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
                         
                         let mongoPrices = await readMongoPriceSnapshot();
-                        const crawlStarted = String(data.updated_at || '').includes('Bắt đầu cào');
-                        if (crawlStarted) {
-                            addLog('Đang cào realtime trên máy chủ; chờ giá mới được ghi vào DB...', 'processing');
+                        const crawlInProgress = data.crawl_in_progress === true ||
+                            String(data.updated_at || '').includes('Bắt đầu cào');
+                        if (crawlInProgress) {
+                            addLog('Máy chủ đang cào realtime; chờ dữ liệu mới được ghi vào DB...', 'processing');
                             mongoPrices = await waitForRealtimePrices(chunk, baselinePrices, 45);
                         }
 
                         chunk.forEach(sym => {
                             const fromSync = data.updated_data && data.updated_data[sym];
                             const fromMongo = mongoPrices[sym];
-                            const newData = fromSync || fromMongo;
-                            const changedAfterRequest = !crawlStarted ||
+                            // Khi crawl đang chạy, tuyệt đối không dùng snapshot DB cũ từ response /api/sync.
+                            const newData = crawlInProgress ? fromMongo : (fromSync || fromMongo);
+                            const changedAfterRequest = !crawlInProgress ||
                                 (fromMongo && fromMongo.updated_at && (!baselinePrices[sym] || fromMongo.updated_at !== baselinePrices[sym].updated_at));
                             if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
                                 const item = screenerResults.find(s => s.symbol === sym);
@@ -1681,14 +1683,16 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             if (res.ok) {
                 const data = await res.json();
                 let mongoPrices = await readMongoPriceSnapshot();
-                const crawlStarted = String(data.updated_at || '').includes('Bắt đầu cào');
-                if (crawlStarted) {
-                    addLog('Đang chờ máy chủ cào xong giá realtime...', 'processing');
+                const crawlInProgress = data.crawl_in_progress === true ||
+                    String(data.updated_at || '').includes('Bắt đầu cào');
+                if (crawlInProgress) {
+                    addLog('Máy chủ đang cào; chờ giá realtime mới được ghi vào DB...', 'processing');
                     mongoPrices = await waitForRealtimePrices([symbol], baselinePrices, 45);
                 }
-                const newData = (data.updated_data && data.updated_data[symbol]) || mongoPrices[symbol];
-                const changedAfterRequest = !crawlStarted ||
-                    (newData && newData.updated_at && (!baselinePrices[symbol] || newData.updated_at !== baselinePrices[symbol].updated_at));
+                const fromMongo = mongoPrices[symbol];
+                const newData = crawlInProgress ? fromMongo : ((data.updated_data && data.updated_data[symbol]) || fromMongo);
+                const changedAfterRequest = !crawlInProgress ||
+                    (fromMongo && fromMongo.updated_at && (!baselinePrices[symbol] || fromMongo.updated_at !== baselinePrices[symbol].updated_at));
                 if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
 
                     const item = screenerResults.find(s => s.symbol === symbol);
