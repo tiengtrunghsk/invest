@@ -628,7 +628,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         document.getElementById('modal-pe').innerText = item.pe > 0 ? item.pe.toFixed(1) : '—';
         document.getElementById('modal-pb').innerText = item.pb > 0 ? item.pb.toFixed(1) : '—';
-        document.getElementById('modal-eps').innerText = item.eps ? formatNumber(item.eps) : '—';
+        // EPS nội bộ lưu theo nghìn đồng/cổ phiếu; modal hiển thị đồng/cổ phiếu.
+        document.getElementById('modal-eps').innerText = item.eps > 0 ? formatNumber(item.eps * 1000) + ' đ' : '—';
         document.getElementById('modal-roe').innerText = item.roe ? formatPercent(item.roe) : '—';
         document.getElementById('modal-roa').innerText = item.roa ? formatPercent(item.roa) : '—';
         document.getElementById('modal-div').innerText = item.dividend_yield ? item.dividend_yield + '%' : '—';
