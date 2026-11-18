@@ -511,11 +511,11 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     
                     // === ƯU TIÊN LẤY TỪ MONGODB (mongoSI -> liveData) TRƯỚC KHI LẤY TỪ FILE TĨNH (extraData) ===
                     eps: liveData.eps !== undefined ? liveData.eps : (mongoSI.eps !== undefined ? mongoSI.eps : (extraData.eps !== undefined ? extraData.eps : (item.eps || 0))),
-                    dividend_yield: mongoSI.dividend_yield !== undefined ? mongoSI.dividend_yield : (liveData.dividend_yield !== undefined ? liveData.dividend_yield : (extraData.dividend_yield !== undefined ? extraData.dividend_yield : (item.dividend_yield || 0))),
-                    pe: mongoSI.pe !== undefined ? mongoSI.pe : (liveData.pe !== undefined ? liveData.pe : (extraData.pe !== undefined ? extraData.pe : (item.pe || 0))),
-                    pb: mongoSI.pb !== undefined ? mongoSI.pb : (liveData.pb !== undefined ? liveData.pb : (extraData.pb !== undefined ? extraData.pb : (item.pb || 0))),
-                    roe: mongoSI.roe !== undefined ? mongoSI.roe : (liveData.roe !== undefined ? liveData.roe : (extraData.roe !== undefined ? extraData.roe : (item.roe || 0))),
-                    roa: mongoSI.roa !== undefined ? mongoSI.roa : (liveData.roa !== undefined ? liveData.roa : (extraData.roa !== undefined ? extraData.roa : (item.roa || 0))),
+                    dividend_yield: liveData.dividend_yield !== undefined ? liveData.dividend_yield : (mongoSI.dividend_yield !== undefined ? mongoSI.dividend_yield : (extraData.dividend_yield !== undefined ? extraData.dividend_yield : (item.dividend_yield || 0))),
+                    pe: liveData.pe !== undefined ? liveData.pe : (mongoSI.pe !== undefined ? mongoSI.pe : (extraData.pe !== undefined ? extraData.pe : (item.pe || 0))),
+                    pb: liveData.pb !== undefined ? liveData.pb : (mongoSI.pb !== undefined ? mongoSI.pb : (extraData.pb !== undefined ? extraData.pb : (item.pb || 0))),
+                    roe: liveData.roe !== undefined ? liveData.roe : (mongoSI.roe !== undefined ? mongoSI.roe : (extraData.roe !== undefined ? extraData.roe : (item.roe || 0))),
+                    roa: liveData.roa !== undefined ? liveData.roa : (mongoSI.roa !== undefined ? mongoSI.roa : (extraData.roa !== undefined ? extraData.roa : (item.roa || 0))),
                     cfo_latest: mongoSI.cfo_latest !== undefined ? mongoSI.cfo_latest : (liveData.cfo_latest !== undefined ? liveData.cfo_latest : (extraData.cfo_latest !== undefined ? extraData.cfo_latest : (item.cfo_latest || 0))),
                     debt_to_equity: mongoSI.debt_to_equity !== undefined ? mongoSI.debt_to_equity : (liveData.debt_to_equity !== undefined ? liveData.debt_to_equity : (extraData.debt_to_equity !== undefined ? extraData.debt_to_equity : (item.debt_to_equity || 0))),
                     gross_margin: mongoSI.gross_margin !== undefined ? mongoSI.gross_margin : (liveData.gross_margin !== undefined ? liveData.gross_margin : (extraData.gross_margin !== undefined ? extraData.gross_margin : (item.gross_margin || 0))),
@@ -626,17 +626,23 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             cheapBadgeContainer.innerHTML = '';
         }
 
-        document.getElementById('modal-pe').innerText = item.pe > 0 ? item.pe.toFixed(1) : '—';
-        document.getElementById('modal-pb').innerText = item.pb > 0 ? item.pb.toFixed(1) : '—';
-        // Ưu tiên EPS từ stocks (MongoDB), lưu theo nghìn đồng/cổ phiếu.
-        // Modal đổi sang đồng/cổ phiếu và không dùng formatNumber() vì hàm đó làm tròn.
+        // Hiển thị nguyên độ chính xác từ stocks MongoDB; không dùng toFixed(1)/formatPercent.
+        const formatModalMetric = (value, suffix = '') => {
+            if (value === null || value === undefined || value === '') return '—';
+            const number = Number(value);
+            if (!Number.isFinite(number)) return '—';
+            return number.toLocaleString('vi-VN', { maximumFractionDigits: 10 }) + suffix;
+        };
+        document.getElementById('modal-pe').innerText = formatModalMetric(item.pe);
+        document.getElementById('modal-pb').innerText = formatModalMetric(item.pb);
+        // EPS trong stocks lưu theo nghìn đồng/cổ phiếu; đổi sang đồng nhưng giữ phần lẻ.
         const epsVnd = Number(item.eps) * 1000;
         document.getElementById('modal-eps').innerText = Number.isFinite(epsVnd) && epsVnd > 0
-            ? epsVnd.toLocaleString('vi-VN', { maximumFractionDigits: 10 }) + ' đ'
+            ? formatModalMetric(epsVnd, ' đ')
             : '—';
-        document.getElementById('modal-roe').innerText = item.roe ? formatPercent(item.roe) : '—';
-        document.getElementById('modal-roa').innerText = item.roa ? formatPercent(item.roa) : '—';
-        document.getElementById('modal-div').innerText = item.dividend_yield ? item.dividend_yield + '%' : '—';
+        document.getElementById('modal-roe').innerText = formatModalMetric(item.roe, '%');
+        document.getElementById('modal-roa').innerText = formatModalMetric(item.roa, '%');
+        document.getElementById('modal-div').innerText = formatModalMetric(item.dividend_yield, '%');
 
         const shares = item.total_shares || 0;
         if (shares > 0) {
