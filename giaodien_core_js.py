@@ -12,15 +12,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     // ══════════════════════════════════════════════════
     // STATE
     // ══════════════════════════════════════════════════
-    // Không nhúng khóa quản trị vào HTML tĩnh.
-    let adminKeySession = null;
-    function getAdminKeySession() {
-        if (adminKeySession) return adminKeySession;
-        const entered = prompt("Nhập ADMIN_SECRET_KEY đã cấu hình trên Render:");
-        if (!entered || !entered.trim()) return null;
-        adminKeySession = entered.trim();
-        return adminKeySession;
-    }
+    const ADMIN_KEY = "959214"; // Mật khẩu Admin (phải giống trên Render)
     let screenerResults = [];
     let symbolSimRates = {};
     let quarterlyMeanDetails = {};
@@ -35,130 +27,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     let userWatchlist = new Set();
     let currentUser = null;
     let chartAutoUpdateInterval = null; // Biến lưu bộ đếm tự động refresh đồ thị
-    let chartRequestSequence = 0;
-
-    // Cache lịch sử biểu đồ chỉ tồn tại trong RAM của trang hiện tại.
-    // Không đặt TTL và không ghi sessionStorage: refresh trang sẽ tự xóa toàn bộ cache.
-    const chartHistoryMemoryCache = new Map();
-
-    function readChartHistoryCache(symbol, allowStale = false) {
-        const key = String(symbol || '').toUpperCase();
-        const cached = chartHistoryMemoryCache.get(key);
-        return cached ? cached.data : null;
-    }
-
-    function writeChartHistoryCache(symbol, data) {
-        if (!data || data.status !== 'success' || !Array.isArray(data.history_d1)) return;
-        const key = String(symbol || '').toUpperCase();
-        chartHistoryMemoryCache.set(key, { cachedAt: Date.now(), data: data });
-    }
-
-    // Nạp trước lịch sử biểu đồ cho các nhóm người dùng quan tâm khi server rảnh.
-    let priorityPrefetchRunning = false;
-    let priorityPrefetchTimer = null;
-    let priorityPrefetchCursor = 0;
-    let priorityPrefetchQueue = [];
-
-    function buildPriorityPrefetchQueue() {
-        const buy = [];
-        const watched = [];
-        const moneyFlow = [];
-        const seen = new Set();
-
-        (screenerResults || []).forEach(item => {
-            const symbol = String(item.symbol || '').trim().toUpperCase();
-            if (!symbol) return;
-            if ((item.final_decision || '').includes('MUA')) buy.push(symbol);
-            if (userWatchlist && userWatchlist.has(symbol)) watched.push(symbol);
-            const pct = Number(item.price_change_percent || 0);
-            const vol = Number(item.volume_percent || 0);
-            if ((pct >= 3 || pct <= -3) && vol >= 120) moneyFlow.push(symbol);
-        });
-
-        return [...buy, ...watched, ...moneyFlow].filter(symbol => {
-            if (seen.has(symbol)) return false;
-            seen.add(symbol);
-            return true;
-        });
-    }
-
-    async function isServerAvailableForPriorityPrefetch() {
-        try {
-            const [statusRes, adminRes, historyRes] = await Promise.all([
-                fetch(`${PRICE_API_URL}/api/status`, { cache: 'no-store' }),
-                fetch(`${PRICE_API_URL}/api/admin/progress`, { cache: 'no-store' }).catch(() => null),
-                fetch(`${PRICE_API_URL}/api/history-crawl-status`, { cache: 'no-store' }).catch(() => null)
-            ]);
-            if (!statusRes.ok) return false;
-            const status = await statusRes.json();
-            if (status.is_crawling) return false;
-            if (status.history_job && status.history_job.status === 'running') return false;
-
-            if (adminRes && adminRes.ok) {
-                const admin = await adminRes.json();
-                if (admin.job && admin.job.status === 'running') return false;
-            }
-            if (historyRes && historyRes.ok) {
-                const history = await historyRes.json();
-                if (history.job && history.job.status === 'running') return false;
-            }
-            return true;
-        } catch (_) {
-            // Không xác định được trạng thái server thì không chạy nền để tránh tranh tài nguyên.
-            return false;
-        }
-    }
-
-    function schedulePriorityChartPrefetch(delay = 1200) {
-        if (priorityPrefetchTimer) clearTimeout(priorityPrefetchTimer);
-        priorityPrefetchTimer = setTimeout(runPriorityChartPrefetch, delay);
-    }
-
-    async function runPriorityChartPrefetch() {
-        priorityPrefetchTimer = null;
-        if (priorityPrefetchRunning) return;
-        priorityPrefetchQueue = buildPriorityPrefetchQueue();
-        priorityPrefetchCursor = 0;
-        if (!priorityPrefetchQueue.length) return;
-
-        if (!(await isServerAvailableForPriorityPrefetch())) {
-            // Nếu server đang cào/tác vụ nền, lùi lịch và kiểm tra lại.
-            schedulePriorityChartPrefetch(15000);
-            return;
-        }
-
-        priorityPrefetchRunning = true;
-        let processedSinceCheck = 0;
-        try {
-            while (priorityPrefetchCursor < priorityPrefetchQueue.length) {
-                if (processedSinceCheck >= 3) {
-                    processedSinceCheck = 0;
-                    if (!(await isServerAvailableForPriorityPrefetch())) {
-                        schedulePriorityChartPrefetch(15000);
-                        break;
-                    }
-                }
-
-                const symbol = priorityPrefetchQueue[priorityPrefetchCursor++];
-                if (readChartHistoryCache(symbol)) continue;
-
-                try {
-                    const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
-                    if (res.ok) {
-                        const data = await res.json();
-                        writeChartHistoryCache(symbol, data);
-                    }
-                } catch (err) {
-                    console.debug('[CHART PREFETCH] Bỏ qua', symbol, err);
-                }
-                processedSinceCheck++;
-                await new Promise(resolve => setTimeout(resolve, 350));
-            }
-        } finally {
-            priorityPrefetchRunning = false;
-        }
-    }
-
 
     // ══════════════════════════════════════════════════
     // DICT STYLE
@@ -393,7 +261,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             // 2. Tải dữ liệu CHẤM ĐIỂM MỚI NHẤT từ API MongoDB (CÓ RETRY KHI 503)
             let mongoScreener = [];
             let mongoPrices = {};
-            let mongoHistory = {};
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000); // Đợi tối đa 5s
@@ -441,41 +308,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     const mJson = await mongoDataRes.json();
                     mongoPrices = mJson.data || {};
                 }
-                // Lấy history hàng loạt để card có dữ liệu chuẩn khi không có realtime.
-                try {
-                    const historyRes = await fetch(`${PRICE_API_URL}/api/history-all?t=` + new Date().getTime(), { signal: controller.signal });
-                    if (historyRes.ok) {
-                        const historyJson = await historyRes.json();
-                        mongoHistory = historyJson.data || {};
-                    }
-                } catch (historyErr) { console.warn('[HISTORY/CARDS] Không tải được history:', historyErr); }
             } catch (e) { 
                 console.warn("⚠️ Không lấy được dữ liệu từ MongoDB. Dùng dữ liệu tĩnh (Github).", e); 
-            }
-
-            // Chọn dữ liệu giá theo nguồn: realtime khi phiên đang mở; còn lại dùng 2 nến D1 mới nhất.
-            function getHistoryPriceSnapshot(symbol) {
-                const bars = (mongoHistory[symbol] && mongoHistory[symbol].history_d1) || [];
-                const validBars = bars.filter(b => b && b.time && Number(b.close) > 0)
-                    .slice().sort((a, b) => String(a.time).localeCompare(String(b.time)));
-                if (!validBars.length) return null;
-                const latest = validBars[validBars.length - 1];
-                const previous = validBars.length >= 2 ? validBars[validBars.length - 2] : null;
-                const close = Number(latest.close);
-                const prevClose = previous ? Number(previous.close) : 0;
-                const available = prevClose > 0 && Number.isFinite(prevClose);
-                const pct = available ? Math.round(((close - prevClose) / prevClose) * 10000) / 100 : 0;
-                return {
-                    close_price: close,
-                    prev_close: available ? prevClose : null,
-                    price_change_percent: pct,
-                    price_change_available: available,
-                    price_arrow: !available || pct === 0 ? '—' : (pct > 0 ? '▲' : '▼'),
-                    price_color: !available || pct === 0 ? 'slate' : (pct > 0 ? 'emerald' : 'rose'),
-                    updated_at: latest.time,
-                    trading_date: latest.time,
-                    price_source: 'history'
-                };
             }
 
             // 3. Hợp nhất dữ liệu: Ưu tiên MongoDB, sau đó đến JSON tĩnh
@@ -487,21 +321,11 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 const extraData = rawStockData[sym] || {};
                 const liveData = mongoPrices[sym] || {}; 
                 const mongoSI = mongoScreenerMap[sym] || {}; 
-                const historySnapshot = getHistoryPriceSnapshot(sym);
-                const liveClose = Number(liveData.close_price !== undefined ? liveData.close_price : liveData.close);
-                const todayVN = new Intl.DateTimeFormat('en-CA', {
-                    timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit'
-                }).format(new Date());
-                // is_locked chỉ là cờ trạng thái khóa sổ; giá realtime vẫn hợp lệ
-                // khi giá được cào trong ngày, kể cả giá không đổi so với tham chiếu.
-                const hasRealtime = Number.isFinite(liveClose) && liveClose > 0 &&
-                    !!liveData.updated_at && String(liveData.trading_date || '') === todayVN;
-                const priceData = hasRealtime ? liveData : (historySnapshot || {});
                 
                 let finalClosePrice = item.close_price || 0;
-                if (priceData.close_price !== undefined) finalClosePrice = priceData.close_price;
-                else if (priceData.close !== undefined) finalClosePrice = priceData.close;
-                else if (!historySnapshot && extraData.close !== undefined) finalClosePrice = extraData.close;
+                if (liveData.close_price !== undefined) finalClosePrice = liveData.close_price;
+                else if (liveData.close !== undefined) finalClosePrice = liveData.close;
+                else if (extraData.close !== undefined) finalClosePrice = extraData.close;
 
                 return {
                     ...item,
@@ -523,19 +347,17 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                     // ================================================================================================
 
                     close_price: finalClosePrice,
-                    prev_close: priceData.prev_close !== undefined ? priceData.prev_close : null,
-                    updated_at: priceData.updated_at || (historySnapshot ? historySnapshot.updated_at : "Chưa rõ"),
-                    open: priceData.open !== undefined ? priceData.open : null,
-                    high: priceData.high !== undefined ? priceData.high : null,
-                    low: priceData.low !== undefined ? priceData.low : null,
-                    volume: priceData.volume !== undefined ? priceData.volume : null,
-                    trading_date: priceData.trading_date || null,
-                    is_locked: priceData.is_locked === true,
-                    price_source: hasRealtime ? 'realtime' : (historySnapshot ? 'history' : 'unavailable'),
-                    price_change_percent: priceData.price_change_percent !== undefined ? priceData.price_change_percent : 0,
-                    price_change_available: priceData.price_change_available === true,
-                    price_arrow: priceData.price_arrow || '—',
-                    price_color: priceData.price_color || 'slate',
+                    updated_at: liveData.updated_at || extraData.updated_at || item.updated_at || "Chưa rõ", 
+                    open: liveData.open !== undefined ? liveData.open : null,
+                    high: liveData.high !== undefined ? liveData.high : null,
+                    low: liveData.low !== undefined ? liveData.low : null,
+                    volume: liveData.volume !== undefined ? liveData.volume : null,
+                    trading_date: liveData.trading_date || null,
+                    is_locked: liveData.is_locked || false,
+                    price_change_percent: liveData.price_change_percent !== undefined && liveData.price_change_available ? liveData.price_change_percent : (item.price_change_percent || 0),
+                    price_change_available: liveData.price_change_available !== undefined ? liveData.price_change_available : (item.price_change_available || false),
+                    price_arrow: liveData.price_arrow && liveData.price_change_available ? liveData.price_arrow : (item.price_arrow || "—"),
+                    price_color: liveData.price_color && liveData.price_change_available ? liveData.price_color : (item.price_color || "slate"),
                     volume_percent: liveData.volume_percent !== undefined ? liveData.volume_percent : (item.volume_percent || 0),
                     amplitude_percent: liveData.amplitude_percent !== undefined ? liveData.amplitude_percent : (item.amplitude_percent || 0),
                     
@@ -575,9 +397,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                 };
             });
             renderCards();
-            // Ưu tiên cache biểu đồ cho danh mục MUA, theo dõi và mã có dòng tiền lớn.
-            // Chạy nền sau khi dữ liệu màn hình đã hiển thị, không chặn thao tác người dùng.
-            schedulePriorityChartPrefetch(1500);
         } catch (error) {
             console.error("Lỗi tải dữ liệu:", error);
             const container = document.getElementById('stock-container');
@@ -1054,17 +873,17 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (!d1Data || d1Data.length === 0) return [];
         if (interval === 'D1') return d1Data;
 
-        const grouped = {};
+        let grouped = {};
         d1Data.forEach(bar => {
-            const date = new Date(bar.time + (String(bar.time).length === 10 ? 'T00:00:00Z' : ''));
+            const date = new Date(bar.time);
             let key;
             if (interval === 'W1') {
-                const weekday = date.getUTCDay();
-                const daysFromMonday = (weekday + 6) % 7;
-                const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - daysFromMonday));
-                key = monday.toISOString().slice(0, 10);
+                const day = date.getDay();
+                const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+                const monday = new Date(date.setDate(diff));
+                key = monday.toISOString().split('T')[0];
             } else { // MN
-                key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
+                key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
             }
 
             if (!grouped[key]) {
@@ -1147,7 +966,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
 
     function closeChartModal() {
-        chartRequestSequence++;
         document.getElementById('chart-modal').classList.add('hidden');
         if (chartInstance) { chartInstance.remove(); chartInstance = null; }
         currentSymbolHistory = null;
@@ -1160,7 +978,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
 
     async function openChartModal(symbol, isRefresh = false) {
-    const requestId = ++chartRequestSequence;
     currentSymbol = symbol;
     
     // Chỉ reset interval khi mở mới (không phải refresh)
@@ -1186,27 +1003,30 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     document.getElementById('chart-loading').classList.remove('hidden');
 
     try {
-        // Mở lại biểu đồ dùng cache còn hạn; refresh tay/tự động luôn lấy dữ liệu mới.
-        let apiData = !isRefresh ? readChartHistoryCache(symbol) : null;
-        if (!apiData) {
-            try {
-                const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
-                if (!res.ok) {
-                    let message = "Không lấy được dữ liệu lịch sử từ API";
-                    try { const errData = await res.json(); message = errData.message || message; } catch (_) {}
-                    throw new Error(message);
-                }
-                apiData = await res.json();
-                if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
-                writeChartHistoryCache(symbol, apiData);
-            } catch (networkError) {
-                // Khi API tạm lỗi, ưu tiên dùng dữ liệu cache cũ để biểu đồ vẫn xem được.
-                apiData = readChartHistoryCache(symbol, true);
-                if (!apiData) throw networkError;
-                console.warn("API biểu đồ lỗi, đang dùng cache gần nhất:", networkError);
+        let apiData;
+        
+        // ✅ MỚI: Ưu tiên lấy từ cache (đã tải trước khi vào web)
+        if (!isRefresh && window.allHistoryCache && window.allHistoryCache[symbol]) {
+            apiData = {
+                status: "success",
+                symbol: symbol,
+                history_d1: window.allHistoryCache[symbol].history_d1 || [],
+                history_w1: [],
+                history_mn: []
+            };
+            console.log(`[CACHE HIT] ${symbol}: Hiện tức thì từ bộ nhớ`);
+        } else {
+            // Fallback: Gọi API nếu chưa có cache hoặc user bấm Refresh
+            const res = await fetch(`${PRICE_API_URL}/api/history?symbol=${symbol}&t=` + new Date().getTime());
+            if (!res.ok) throw new Error("Không lấy được dữ liệu lịch sử từ API");
+            apiData = await res.json();
+            if (apiData.status !== "success") throw new Error(apiData.message || "Lỗi API");
+            
+            // === FIX: Cập nhật lại cache để lần Refresh sau dùng dữ liệu mới ===
+            if (window.allHistoryCache) {
+                window.allHistoryCache[symbol] = { history_d1: apiData.history_d1 || [] };
             }
         }
-        if (requestId !== chartRequestSequence || currentSymbol !== symbol) return;
 
         const normalizeTime = (timeStr) => {
             if (!timeStr) return null;
@@ -1217,21 +1037,15 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             return timeStr.toString().split(' ')[0].split('T')[0];
         };
 
-        // DB chuẩn dùng nghìn đồng; tương thích dữ liệu cũ còn lưu theo đồng.
-        const toChartPrice = value => {
-            let n = Number(value);
-            if (!Number.isFinite(n) || n <= 0) return null;
-            if (n >= 1000) n /= 1000;
-            return n * 1000;
-        };
-        let normalizedD1 = (apiData.history_d1 || []).map(bar => ({
-            time: normalizeTime(bar.time), open: toChartPrice(bar.open),
-            high: toChartPrice(bar.high), low: toChartPrice(bar.low),
-            close: toChartPrice(bar.close), volume: Math.max(0, Number(bar.volume) || 0)
-        })).filter(bar => bar.time && bar.open && bar.high && bar.low && bar.close &&
-            bar.high >= Math.max(bar.open, bar.close, bar.low) &&
-            bar.low <= Math.min(bar.open, bar.close, bar.high))
-          .sort((a, b) => a.time.localeCompare(b.time));
+        // Chuẩn hóa dữ liệu nến ngày (nhân 1000 để đưa về đồng)
+        let normalizedD1 = (apiData.history_d1 || [])
+            .filter(bar => bar.time && bar.open > 0 && bar.close > 0)
+            .map(bar => ({
+                time: normalizeTime(bar.time), 
+                open: bar.open * 1000, high: bar.high * 1000, 
+                low: bar.low * 1000, close: bar.close * 1000, 
+                volume: bar.volume
+            }));
 
         // Tự động gộp Tuần và Tháng từ Dữ liệu Ngày
         currentSymbolHistory = {
@@ -1292,9 +1106,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             }
         }
 
-        const uniqueBars = new Map();
-        currentSymbolHistory.history_d1.forEach(bar => uniqueBars.set(bar.time, bar));
-        currentSymbolHistory.history_d1 = Array.from(uniqueBars.values()).sort((a, b) => a.time.localeCompare(b.time));
+        currentSymbolHistory.history_d1.sort((a, b) => a.time.localeCompare(b.time));
+        currentSymbolHistory.history_d1 = currentSymbolHistory.history_d1.filter((v, i, a) => a.findIndex(t => t.time === v.time) === i);
         
         // Cập nhật lại W1/MN sau khi chèn nến realtime
         currentSymbolHistory.history_w1 = aggregateCandles(currentSymbolHistory.history_d1, 'W1');
@@ -1366,7 +1179,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
     function renderChartInstance(historyDataObj) {
         const container = document.getElementById('tv-chart-container');
-        if (chartInstance) { try { chartInstance.remove(); } catch (_) {} chartInstance = null; }
         container.innerHTML = '';
         const LC = window.LightweightCharts;
         if (!LC) return;
@@ -1515,39 +1327,6 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     // ══════════════════════════════════════════════════
     // REFRESH GIÁ (CÓ TIMEOUT)
     // ══════════════════════════════════════════════════
-
-    // Đọc snapshot giá từ MongoDB và chờ crawl nền ghi xong trước khi cập nhật card.
-    async function readMongoPriceSnapshot() {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-            const res = await fetch(`${PRICE_API_URL}/api/data?t=` + Date.now(), { signal: controller.signal, cache: 'no-store' });
-            clearTimeout(timeoutId);
-            if (!res.ok) return {};
-            const json = await res.json();
-            return json.data || {};
-        } catch (err) {
-            return {};
-        }
-    }
-
-    async function waitForRealtimePrices(symbols, baselinePrices, maxAttempts = 45) {
-        let latestPrices = {};
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            latestPrices = await readMongoPriceSnapshot();
-            const pending = symbols.filter(sym => {
-                const current = latestPrices[sym];
-                const previous = baselinePrices[sym];
-                const close = Number(current && (current.close_price !== undefined ? current.close_price : current.close));
-                return !current || !(close > 0) || !current.updated_at ||
-                    (previous && current.updated_at === previous.updated_at);
-            });
-            if (pending.length === 0) return latestPrices;
-            await new Promise(resolve => setTimeout(resolve, 1200));
-        }
-        return latestPrices;
-    }
-
     let isRefreshingAll = false;
     async function refreshPrices() {
         if (isRefreshingAll || isRefreshingSingle) { addLog(`Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!`, 'warning'); return; }
@@ -1572,7 +1351,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         addLog(`Bắt đầu lấy giá cho ${symbols.length} mã...`, 'processing');
         updateProgress(0, symbols.length);
         try {
-            const chunkSize = Math.max(1, symbols.length);
+            const chunkSize = 20;
             const chunks = [];
             for (let i = 0; i < symbols.length; i += chunkSize) { chunks.push(symbols.slice(i, i + chunkSize)); }
             let updatedCount = 0;
@@ -1581,9 +1360,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             await Promise.all(chunks.map(async (chunk) => {
                 const symQuery = chunk.join(',');
                 try {
-                    const baselinePrices = await readMongoPriceSnapshot();
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 8000);
+                    const timeoutId = setTimeout(() => controller.abort(), 5000);
 
                     const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symQuery}`, { signal: controller.signal });
                     clearTimeout(timeoutId);
@@ -1592,37 +1370,38 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
                         const data = await res.json();
                         lastUpdateTime = data.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
                         
-                        let mongoPrices = await readMongoPriceSnapshot();
-                        const crawlInProgress = data.crawl_in_progress === true ||
-                            String(data.updated_at || '').includes('Bắt đầu cào');
-                        if (crawlInProgress) {
-                            addLog('Máy chủ đang cào realtime; chờ dữ liệu mới được ghi vào DB...', 'processing');
-                            mongoPrices = await waitForRealtimePrices(chunk, baselinePrices, 45);
+                        const dataController = new AbortController();
+                        const dataTimeoutId = setTimeout(() => dataController.abort(), 5000);
+                        
+                        const dataRes = await fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: dataController.signal });
+                        clearTimeout(dataTimeoutId);
+
+                        let mongoPrices = {};
+                        if (dataRes.ok) {
+                            const mongoJson = await dataRes.json();
+                            mongoPrices = mongoJson.data || {};
                         }
 
                         chunk.forEach(sym => {
-                            const fromSync = data.updated_data && data.updated_data[sym];
-                            const fromMongo = mongoPrices[sym];
-                            // Khi crawl đang chạy, tuyệt đối không dùng snapshot DB cũ từ response /api/sync.
-                            const newData = crawlInProgress ? fromMongo : (fromSync || fromMongo);
-                            const changedAfterRequest = !crawlInProgress ||
-                                (fromMongo && fromMongo.updated_at && (!baselinePrices[sym] || fromMongo.updated_at !== baselinePrices[sym].updated_at));
-                            if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
+                            if (data.updated_data && data.updated_data[sym] !== undefined) {
+                                const newData = data.updated_data[sym];
                                 const item = screenerResults.find(s => s.symbol === sym);
                                 
                                 if (item) { 
-                                    item.close_price = newData.close_price !== undefined ? newData.close_price : newData.close;
+                                    item.close_price = newData.close_price || newData.close; 
                                     item.prev_close = newData.prev_close;
                                     item.price_change_percent = newData.price_change_percent;
                                     item.price_change_available = newData.price_change_available;
                                     item.price_arrow = newData.price_arrow;
                                     item.price_color = newData.price_color;
-                                    item.updated_at = newData.updated_at || lastUpdateTime;
-                                    item.trading_date = newData.trading_date || item.trading_date;
-                                    item.is_locked = newData.is_locked === true;
-                                    item.price_source = 'realtime';
+                                    
+                                    if (!item.is_locked && newData.updated_at) {
+                                        item.updated_at = newData.updated_at;
+                                    } else if (!item.is_locked) {
+                                        item.updated_at = lastUpdateTime;
+                                    }
                                 }
-                                addLog(`${sym}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
+                                addLog(`${sym}: ${formatPrice(newData.close_price)} đ`, 'success');
                                 updatedCount++;
                             } else { addLog(`${sym}: Không lấy được giá`, 'error'); }
                             processedCount++;
@@ -1674,61 +1453,61 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         updateProgress(0, 1);
         addLog(`Bắt đầu lấy giá cho ${symbol}...`, 'processing');
         try {
-            const baselinePrices = await readMongoPriceSnapshot();
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
             const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symbol}`, { signal: controller.signal });
             clearTimeout(timeoutId);
 
             if (res.ok) {
                 const data = await res.json();
-                let mongoPrices = await readMongoPriceSnapshot();
-                const crawlInProgress = data.crawl_in_progress === true ||
-                    String(data.updated_at || '').includes('Bắt đầu cào');
-                if (crawlInProgress) {
-                    addLog('Máy chủ đang cào; chờ giá realtime mới được ghi vào DB...', 'processing');
-                    mongoPrices = await waitForRealtimePrices([symbol], baselinePrices, 45);
-                }
-                const fromMongo = mongoPrices[symbol];
-                const newData = crawlInProgress ? fromMongo : ((data.updated_data && data.updated_data[symbol]) || fromMongo);
-                const changedAfterRequest = !crawlInProgress ||
-                    (fromMongo && fromMongo.updated_at && (!baselinePrices[symbol] || fromMongo.updated_at !== baselinePrices[symbol].updated_at));
-                if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
+                if (data.updated_data && data.updated_data[symbol] !== undefined) {
+                    const newData = data.updated_data[symbol];
+                    
+                    const dataController = new AbortController();
+                    const dataTimeoutId = setTimeout(() => dataController.abort(), 5000);
+                    const dataRes = await fetch(`${PRICE_API_URL}/api/data?t=` + new Date().getTime(), { signal: dataController.signal });
+                    clearTimeout(dataTimeoutId);
+
+                    let mongoPrices = {};
+                    if (dataRes.ok) {
+                        const mongoJson = await dataRes.json();
+                        mongoPrices = mongoJson.data || {};
+                    }
 
                     const item = screenerResults.find(s => s.symbol === symbol);
                     if (item) { 
-                        item.close_price = newData.close_price !== undefined ? newData.close_price : newData.close;
+                        item.close_price = newData.close_price || newData.close; 
                         item.prev_close = newData.prev_close;
                         item.price_change_percent = newData.price_change_percent;
                         item.price_change_available = newData.price_change_available;
                         item.price_arrow = newData.price_arrow;
                         item.price_color = newData.price_color;
-                        item.updated_at = newData.updated_at || item.updated_at;
-                        item.trading_date = newData.trading_date || item.trading_date;
-                        item.is_locked = newData.is_locked === true;
-                        item.price_source = 'realtime';
+
+                        if (!item.is_locked && newData.updated_at) {
+                            item.updated_at = newData.updated_at;
+                        }
                     }
 
                     const card = btnElement.closest('.bg-slate-900');
                     if (card) {
                         const priceEl = card.querySelector('.text-emerald-400.leading-tight');
                         if (priceEl) {
-                            priceEl.innerText = formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close);
+                            priceEl.innerText = formatPrice(newData.close_price);
                             priceEl.classList.add('text-white', 'bg-emerald-500');
                             setTimeout(() => priceEl.classList.remove('text-white', 'bg-emerald-500'), 500);
                         }
                         const timeEl = card.querySelector('.fa-clock').parentElement;
                         if (timeEl) {
-                            timeEl.innerHTML = `<i class="fa-regular fa-clock mr-0.5"></i>${newData.updated_at || 'Vừa cập nhật'}`;
+                            timeEl.innerHTML = `<i class="fa-regular fa-clock mr-0.5"></i>${newData.updated_at || lastUpdateTime}`;
                         }
                         const pctEl = card.querySelector('.price-change-percent');
                         if (pctEl) {
                             pctEl.innerText = `${newData.price_arrow} ${newData.price_change_percent}%`;
                         }
                     }
-                    addLog(`${symbol}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
+                    addLog(`${symbol}: ${formatPrice(newData.close_price)} đ`, 'success');
                 } else {
-                    addLog(`${symbol}: Chưa nhận được giá realtime mới; giữ nguyên dữ liệu hiện tại`, 'warning');
+                    addLog(`${symbol}: Không lấy được giá`, 'error');
                 }
             } else { addLog(`${symbol}: Lỗi server (${res.status})`, 'error'); }
         } catch (err) { 
@@ -1775,10 +1554,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (icon) icon.className = "fa-solid fa-spinner spinner";
 
         try {
-            const adminKey = getAdminKeySession();
-            if (!adminKey) return;
-            const url = `${PRICE_API_URL}/api/score-single?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`;
-            const res = await fetch(url, { headers: { "X-Admin-Key": adminKey } });
+            const url = `${PRICE_API_URL}/api/score-single?symbol=${encodeURIComponent(symbol)}&key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`;
+            const res = await fetch(url);
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
@@ -1821,9 +1598,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
         isRescoring = true;
         try {
-            const adminKey = getAdminKeySession();
-            if (!adminKey) return;
-            const res = await fetch(`${PRICE_API_URL}/api/force-screener?t=${Date.now()}`, { headers: { "X-Admin-Key": adminKey } });
+            const res = await fetch(`${PRICE_API_URL}/api/force-screener?key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`);
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status}` }; }
@@ -1866,9 +1641,7 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         icon.className = "fa-solid fa-spinner spinner";
         
         try {
-            const adminKey = getAdminKeySession();
-            if (!adminKey) return;
-            const res = await fetch(`${PRICE_API_URL}/api/admin/force-ai-single?symbol=${encodeURIComponent(currentSymbol)}`, { headers: { "X-Admin-Key": adminKey } });
+            const res = await fetch(`${PRICE_API_URL}/api/admin/force-ai-single?symbol=${currentSymbol}&key=${ADMIN_KEY}`);
             let data;
             try { data = await res.json(); }
             catch (pe) { data = { status: 'error', message: `HTTP ${res.status} — server không phản hồi JSON` }; }
@@ -1921,6 +1694,24 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
     }
     loadData(true);
 
-    // Lịch sử được tải theo từng mã khi mở biểu đồ; không preload toàn thị trường.
+    // ══════════════════════════════════════════════════
+    // TẢI TRƯỚC TOÀN BỘ LỊCH SỬ ĐỒ THỊ (1 LẦN DUY NHẤT)
+    // ══════════════════════════════════════════════════
+    window.allHistoryCache = {};
+    setTimeout(async () => {
+        try {
+            console.log("🚀 Bắt đầu tải toàn bộ lịch sử đồ thị...");
+            const res = await fetch(`${PRICE_API_URL}/api/history-all`);
+            if (res.ok) {
+                const json = await res.json();
+                window.allHistoryCache = json.data || {};
+                console.log(`✅ Đã tải ${Object.keys(window.allHistoryCache).length} mã vào bộ nhớ đệm`);
+            } else {
+                console.warn("⚠️ Không tải được lịch sử toàn bộ, sẽ dùng API từng mã khi mở đồ thị.");
+            }
+        } catch (e) {
+            console.warn("Lỗi tải toàn bộ lịch sử:", e);
+        }
+    }, 3000); // Đợi 3 giây để loadData() xong, không làm nghẽn server
 
     """
